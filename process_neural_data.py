@@ -1371,7 +1371,7 @@ class data_processing:
         """
         trial_data = []  # shape = trials x neurons x frames 
         for trial in data_dict.keys(): 
-            neural_data = data_dict[trial]['deconv_data'].T  # shape = neurons x frames 
+            neural_data = data_dict[trial]['deconv'].T  # shape = neurons x frames 
             neural_data[neural_data[:,:] < 0.05] = 0 
             trial_data.append(neural_data)
         return trial_data
