@@ -24,6 +24,7 @@ from oasis.plotting import simpleaxis
 from oasis.oasis_methods import oasisAR1, oasisAR2
 import hdf5storage
 from neo.io import AxonIO
+import platform
 
 class deconvolution:
     """
@@ -117,13 +118,20 @@ class deconvolution:
             Fneu = np.load(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
             iscell = np.load(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
         elif AB_or_JM == 'JM':
-            directory = Path(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}/suite2p/plane0")
+           
+            if platform.system() == 'Windows':
+                directory = Path(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0")
+                F = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/F.npy")
+                Fneu = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
+                iscell = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
+            else:
+                directory = Path(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0")
+                F = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/F.npy")
+                Fneu = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
+                iscell = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
             print(directory)
             os.chdir(directory)
-            F = np.load(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}/suite2p/plane0/F.npy")
-            Fneu = np.load(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
-            iscell = np.load(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}/suite2p/plane0/iscell.npy")
-            
+
         print("loaded Fall")    
         numROI = F.shape[0]
         icel = np.where(iscell[:, 0] == 1)[0]
@@ -149,7 +157,7 @@ class deconvolution:
             directory = Path(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}")
         directory.mkdir(parents=True, exist_ok=True)
 
-        return dff, z_dff
+        return dff, z_dff, icel
 
     @staticmethod
     def decovolve(dff):
@@ -313,7 +321,7 @@ class alignment:
             trial_info["condition"] = int(maze_data["condition"].item())
             trial_info["leftTrial"] = int(maze_data["leftTrial"].item())
             trial_info["whiteTrial"] = int(maze_data["whiteTrial"].item())
-            trial_info["is_stim_trial"] = int(maze_data["is_stim_trial"].item()) if "is_stim_trial" in maze_data.dtype.names else None
+            trial_info["is_stim_trial"] = int(maze_data["is_stim_trial"].item()) if "is_stim_trial" in maze_data.dtype.names else np.NaN
 
             # Add to structured_dataCell dictionary
             structured_dataCell[f"trial_{trial_idx + 1}"] = trial_info
@@ -374,7 +382,7 @@ class alignment:
                 #if channel_number >= segments.analogsignals[0].shape[1]:
                 #    raise IndexError(f"Channel number {channel_number} is out of bounds for available channels.")
 
-                sync_data = segments.analogsignals[2][:, 2].magnitude.flatten()
+                sync_data = segments.analogsignals[2][:, channel_number].magnitude.flatten()
                 sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
 
             galvo_signal_norm = sync_data / np.max(sync_data)
@@ -658,7 +666,9 @@ class alignment:
         acquisitions = []
         
         # Get list of sync files
-        sync_files = [f for f in os.listdir(base) if string in f and f.endswith('.abf')]
+        # sync_files = [f for f in os.listdir(base) if string in f and f.endswith('.abf')] # akhil method
+        sync_files = [f for f in os.listdir(base) if f.endswith('.abf')]
+
         num_files = len(sync_files)
 
         for n in range(num_files):
@@ -668,7 +678,8 @@ class alignment:
             # Load sync data
             reader = AxonIO(sync_file_path)
             segments = reader.read_block().segments[0]
-            sync_data = segments.analogsignals[2][:, 1].magnitude.flatten()
+            #sync_data = segments.analogsignals[2][:, 1].magnitude.flatten()
+            sync_data = segments.analogsignals[2][:, 3].magnitude.flatten()
             sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
             
             # Process temp signal
@@ -978,6 +989,9 @@ class alignment:
             iti_end_it = yy
             
             # Initialize the trial dictionary
+            prefix = 'Trial_'
+            # dict_key = f"{prefix}{int(current_trial.split('_')[1]):03}"
+
             imaging[current_trial] = {
                 'start_it': start_it,
                 'end_it': end_it,
@@ -987,7 +1001,16 @@ class alignment:
                     'correct': dataCell[current_trial]['correct'],
                     'left_turn': dataCell[current_trial]['leftTurn'],
                     'condition': dataCell[current_trial]['condition']
-                }
+                },
+                'dff': np.NaN,
+                'z_dff': np.NaN,
+                'deconv': np.NaN,
+                'relative_frames': np.NaN,
+                'file_num': np.NaN,
+                'movement_in_virmen_time': np.NaN,
+                'frame_id': np.NaN,
+                'movement_in_imaging_time': np.NaN,
+                'good_trial': np.NaN
             }
             
             # Add stim trial info if available
@@ -1031,7 +1054,7 @@ class alignment:
                         'dff': dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
                         'z_dff': z_dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
                         'deconv': deconv[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
-                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1),
+                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1), ## ISSUE HERE?? WHY PLUS 1??
                         'file_num': file_ind
                     })
                     
