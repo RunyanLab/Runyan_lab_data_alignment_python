@@ -951,7 +951,7 @@ class GalvoTargetAnalysis:
             dist_ids = np.array(self.trial_info['dist_id'][i])
             order = np.argsort(dist_ids)
 
-            length = 5*(len(target_rois[order])-1)
+            length = 5*(len(target_rois[order]))
             plt.figure(figsize=(length, 5))
             
             for n, roi_idx in enumerate(target_rois[order]):
@@ -1004,7 +1004,7 @@ class GalvoTargetAnalysis:
             #         continue
 
             roi_plot_dir = os.path.join(self.save_folder, 'roi plots')
-            plt.tight_layout()
+            #plt.tight_layout()
             plt.savefig(os.path.join(roi_plot_dir, f'{i+1} candidate rois neu correct.png'))
             plt.show()
 
@@ -1034,8 +1034,11 @@ class GalvoTargetAnalysis:
         suite2p_folder_red = self.suite2p_folder + r'\\Fall_red.mat'
         Fall_red = scipy.io.loadmat(suite2p_folder_red)
 
+        suite2p_folder_all = self.suite2p_folder + r'\\Fall.mat'
+        Fall= scipy.io.loadmat(suite2p_folder_all)
+
         red_cells = np.where(Fall_red['iscell'][:,0]==1)[0]
-        all_cells = np.where(self.iscell[:,0]==1)[0]
+        all_cells = np.where(Fall['iscell'][:,0]==1)[0]
         non_cells = np.setdiff1d(all_cells,red_cells)
 
         # Save non-cell suite2p inds

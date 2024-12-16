@@ -132,6 +132,11 @@ class deconvolution:
             print(directory)
             os.chdir(directory)
 
+        
+        if AB_or_JM == 'JM':
+            Fall = scipy.io.loadmat(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fall.mat")
+            iscell = Fall['iscell']
+
         print("loaded Fall")    
         numROI = F.shape[0]
         icel = np.where(iscell[:, 0] == 1)[0]
