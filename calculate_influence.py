@@ -242,7 +242,62 @@ class CalculateInfluence:
         name = os.path.join(base,'activity.mat')
         hdf5storage.savemat(name,activity, format='7.3', oned_as='column',truncate_existing=True)
 
+    def inf_calculation_control_stims(self, trial_frames_final, stim_id, activity_struct, pre, post, full_trials,target_cells):
+        structs = {(i,j): None for i in range(len(activity_struct)) for j in range(len(trial_frames_final))}
+        # Main loop
+        for ind in range(len(activity_struct)): # Loop through activity struct
+            for target in range(len(trial_frames_final)):  # Loop through targets
 
+                # +1 to differentiate first target from zeros in array
+                stim_locs = np.where(stim_id == target + 1)[0]  
+                structs[ind, target] = np.zeros([activity_struct[ind].shape[0] ,trial_frames_final[target].shape[0] ,len(trial_frames_final[target][0, :])])
 
+                for trial in range(trial_frames_final[target].shape[0]):  # Loop through trials
+                    # Check if trial has full frames for influence calculation and to ensure matching dimensions 
+                    if not full_trials[target][:][trial]:
+                        continue
 
+                    # Pull out trial frames
+                    trial_frames = np.asarray(trial_frames_final[target][trial, :],dtype=int)
+
+                    # Double check if trial frames goes beyond max imaging frames 
+                    if np.max(trial_frames) < activity_struct[ind].shape[1]:
+                        # Store activity traces 
+                        structs[ind, target][:, trial, :] = activity_struct[ind][:, trial_frames]
+
+            influence = {(i) : None for i in range(len(activity_struct))} 
+
+        for ind in range(len(activity_struct)):
             
+            num_targets = len(trial_frames_final)
+            num_neurons = structs[ind,0].shape[0]
+            influence[ind] =np.zeros([num_targets, num_neurons], dtype=float)
+            influence[ind] =np.zeros([num_targets, num_neurons], dtype=float)
+
+            for target in range(len(trial_frames_final)):
+                #     current = structs[ind, target]
+                #     num_neurons, num_trials, num_frames = current.shape
+
+                current = structs[ind,target]
+                num_trials = current.shape[1]
+                
+                after = np.zeros([num_neurons,num_trials], dtype=float)
+                
+                for neuron in range(num_neurons):
+                    #pre_act = current[neuron, :, pre-31:pre]
+                    post_act = current[neuron, :, post:31+post]
+
+                    # Calculate delta for this neuron
+                    #delta[neuron, :] = np.mean(post_act, axis=1) - np.mean(pre_act, axis=1) 
+                    after[neuron,:] = np.mean(post_act, axis=1)
+
+                # Calculate influence
+                # mean_delta = np.mean(delta[:,:], axis=1)
+                # std_delta = np.std(delta[:,:], axis=1, ddof=0)  # ddof=0 for population std
+                # influence[ind][target,:] = mean_delta / std_delta
+            
+
+        return influence, structs
+
+    #def create_trial_frames_control_stims(imaging):
+

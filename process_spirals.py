@@ -252,6 +252,11 @@ class GalvoTargetAnalysis:
         plt.hist(np.diff(frame_times))
         plt.title('Unique frame intervals - if seeing range of values then check alignment carefully')
         plt.gca().tick_params(labelsize=12)
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        plt.tight_layout()
 
         galvo_plot_dir = os.path.join(self.save_folder, 'imaging_plots')
         os.makedirs(galvo_plot_dir, exist_ok=True)
@@ -303,7 +308,7 @@ class GalvoTargetAnalysis:
             
             # Extract spiral parameters from XML
             points = np.zeros((len(mark_points['PVMarkPointElement']), 2))
-            point_order = np.zeros(len(mark_points['PVMarkPointElement']))
+            point_order = np.zeros(len(mark_points['PVMarkPointElement'])) 
             
 
             # Get points from mark points XML
@@ -434,6 +439,9 @@ class GalvoTargetAnalysis:
                  distoff_um=distoff_um)
 
         # Get consolidated points across acquisitions
+        # Only neccessary if there are a different number of points or different points in each acquisition
+        # Looks at the unique points in each acquisition and matches those with locations of each  
+        ################################################ 
         temp_points = []
         temp_point_order = []
         for acq_info in self.alignment_info:
@@ -449,6 +457,8 @@ class GalvoTargetAnalysis:
         for p, po in enumerate(point_order):
             idx = np.where(temp_point_order == po)[0][-1]
             points[p] = temp_points[idx]
+
+        ################################################
 
         # Find target ROIs
         target_id, dist_id = self._find_targets(
@@ -476,7 +486,7 @@ class GalvoTargetAnalysis:
                     block_edges[acq_num] - frames_per_folder[acq_num],
                     block_edges[acq_num]
                 )
-                
+                                
                 for stim_idx, stim_time in enumerate(acq_info['spiral_start_times']):
                     # Find closest frame to stim time
                     frame_idx = np.argmin(np.abs(
@@ -489,7 +499,11 @@ class GalvoTargetAnalysis:
                     #     point_idx = len(acq_info['point_order'])
 
 
+                    # TO DO: 
+                    # CHANGE - assign point index based on the position of  the modded stim_idx in the point order array 
+                    # SPECIFIC to each aquisition
                     
+
                     point_idx = int(stim_idx % len(acq_info['point_order']))
 
                     # Record stimulation
@@ -886,7 +900,10 @@ class GalvoTargetAnalysis:
                     c='b', label='Start')
         plt.title(f"Acquisition {acq_data['acq_number']}")
         plt.legend()
-        
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
         # Second subplot
         plt.subplot(212)
         plt.plot(acq_data['filtered_signal'])
@@ -894,7 +911,8 @@ class GalvoTargetAnalysis:
                     acq_data['filtered_signal'][acq_data['spiral_start_times']], 
                     c='b')
         plt.title('Filtered Signal')
-        
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         plt.tight_layout()
         
         # Save or show based on parameters

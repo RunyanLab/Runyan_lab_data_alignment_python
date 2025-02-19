@@ -18,6 +18,7 @@ import matplotlib as mpl
 import random
 import pickle
 import gzip
+import pyabf
 from pathlib import Path
 from oasis.functions import gen_data, gen_sinusoidal_data, deconvolve, estimate_parameters
 from oasis.plotting import simpleaxis
@@ -247,10 +248,11 @@ class alignment:
     This class provides methods for synchronizing neural activity data with 
     behavioral timestamps and events during experimental trials.
     """
-    
+    # Intialization methods 
     def __init__(self):
         pass
 
+    # 'PUBLIC' methods 
     def load_virmen_data(self, info):
         """
         Load and structure VirMEn behavioral data from MAT files.
@@ -333,6 +335,132 @@ class alignment:
 
         return structured_dataCell, data  # Return as structured dictionaries
 
+    def align_virmen_iterations_to_digidata(self, base, virmen_channel):
+        """
+        Extract virmen iterations and timing information from digidata files using positive peaks.
+        Return the location of each VIRMEN iteration in pClamp time broken into the corresponding pClamp file
+        
+        Args:
+            self: Instance of alignment class
+            base (str): Base directory path containing sync files
+            virmen_channel_number (int): Channel number for virmen data
+            
+        Returns:
+            tuple: (acquisitions, updated_trial_its, sound_condition_array)
+                - acquisitions (list): List of dictionaries containing processed data for each file
+                - updated_trial_its (dict): Updated trial iteration information
+                - sound_condition_array (list): Updated sound condition information
+        """
+
+        # clear the plots
+        plt.figure(21)
+        plt.clf()
+        
+        plt.figure(22)
+        plt.clf()
+
+        # Get list of sync files
+        sync_files = [f for f in os.listdir(base) if f.endswith('.abf')]
+
+        # Initalize the acquisition structure 
+        acquisitions = []
+
+        for file_ind, file in enumerate(sync_files):
+            sync_file_path = os.path.join(base, file)
+
+            # Load sync data
+            sync_data = self.load_sync_data([],sync_file_path)
+
+            # Process temp signal
+            iteration_signal = sync_data[:,virmen_channel]
+            iteration_signal = iteration_signal - np.median(iteration_signal)
+
+            # Find peaks with adjusted parameters
+            peaks = find_peaks(np.abs(iteration_signal), 
+                                            height=0.09,
+                                            distance=5)[0]
+
+            if len(peaks) == 0:
+                print(f"No peaks found in file {file}")
+                # continue
+                
+            # Normalize peaks
+            iteration_signal = iteration_signal / np.abs(np.mean(iteration_signal[peaks]))
+
+            # Adjust peak locations by adding 1 
+            # Why is this being done? 
+            # peaks = peaks + 1
+
+            # Iteration values are the peaks, the times are the indexes
+            # it_times is indexed relative to pclamp timing
+            it_values = iteration_signal[peaks]
+            it_times = peaks
+
+            # Find positive peaks
+            # positive peaks are used to align pclamp time with time in virmen
+            # positive peaks occur every 10,000 iterations and increase in height by .1 each positive peak
+            marked_its = np.where(it_values > 0)[0]
+            if len(marked_its) == 0:
+                print(f"No positive peaks found in file {file}")
+                # continue
+
+            # actual_it_values will be relative to the total number of iterations 
+            # in the matlab file virmen saves as 'data'
+            actual_it_values = np.zeros(len(it_values))
+
+            # Process first iteration with adjusted rounding
+            # if first iteration is an abnormal size like 10 
+            if round(it_values[marked_its[0]], 0) == 10:
+                actual_it_values[marked_its[0]] = 0
+            else:
+                # find first positive peak, use that value in terms of a multiple of 10k to set the absolute iteration
+                # indexes for the previous frames
+                actual_it_values[marked_its[0]] = round((it_values[marked_its[0]] * 1e5) / 1e4) * 1e4
+                # Process previous iterations
+                next_value = actual_it_values[marked_its[0]]
+                for it in range(marked_its[0] - 1, -1, -1):
+                    actual_it_values[it] = next_value - 1
+                    next_value = actual_it_values[it]
+
+            # use the positive peak to asign absolute iteration indexes for the rest of the peaks in the pclamp data   
+            previous_value = actual_it_values[marked_its[0]] - 1
+            for it in range(marked_its[0] + 1, len(it_values)):
+                actual_it_values[it] = previous_value + 1
+                previous_value = actual_it_values[it]
+
+
+            # Store results
+            acquisition = {
+                'actual_it_values': actual_it_values,
+                'it_times':  it_times,
+                'positive_peaks' : marked_its,
+                'positive_peaks_values' : actual_it_values[marked_its],
+                'directory': sync_files[file_ind]
+            }
+                
+            acquisitions.append(acquisition)
+
+            # Optional plotting
+            plt.figure(21)
+            plt.subplot(4,4,file_ind+1)
+
+            # make subplots, organize by the number of acquisitions 
+            
+            plt.plot(iteration_signal)
+            plt.plot(it_times[marked_its], np.zeros_like(marked_its), 'c*')
+            plt.tight_layout()
+        
+        plt.figure(21)
+        plt.show()
+        # Final plot
+        plt.figure(22)
+        plt.title('virmen iteration values across files')
+        for acq in acquisitions:
+            plt.plot(acq['it_times'], acq['actual_it_values'])
+        plt.show()
+
+        return acquisitions   # Replace None with updated_trial_its if needed
+
     def get_frame_times(self, imaging_base_path, sync_base_path, channel_number, plot_on):
         """
         Extract frame timing information from synchronization files for imaging data.
@@ -382,13 +510,14 @@ class alignment:
 
             # Load sync data based on file type
             if is_pclamp:
-                reader = AxonIO(sync_file_path)
-                segments = reader.read_block().segments[0]
+                # reader = AxonIO(sync_file_path)
+                # segments = reader.read_block().segments[0]
                 #if channel_number >= segments.analogsignals[0].shape[1]:
                 #    raise IndexError(f"Channel number {channel_number} is out of bounds for available channels.")
-
-                sync_data = segments.analogsignals[2][:, channel_number].magnitude.flatten()
-                sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
+                sync_data, sync_sampling_rate = self.load_sync_data(sync_file_path)
+                sync_data = sync_data[:,channel_number]
+                # sync_data = segments.analogsignals[2][:, channel_number].magnitude.flatten()
+                # sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
 
             galvo_signal_norm = sync_data / np.max(sync_data)
             peaks, _ = find_peaks(galvo_signal_norm, height=0.3, prominence=0.1)
@@ -428,359 +557,321 @@ class alignment:
 
         return alignment_info
 
-    def get_digidata_iterations(self, sync_base_path, string, virmen_channel):
+    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell):
         """
-        Extract iteration timing information from DigiData synchronization files.
+        Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
         
         Args:
             self: Instance of alignment class
-            sync_base_path (str): Path to the synchronization files directory
-            string (str): String identifier for sync files
-            virmen_channel (int): Channel number for VirMEn data
-            
-        Returns:
-            list: List of dictionaries containing iteration information for each file:
-                - locs (ndarray): Locations of absolute peaks
-                - it_gaps (ndarray): Gaps between iterations
-                - sync_sampling_rate (float): Sampling rate of sync signal
-                - directory (str): Full path to sync file
-                - pos_loc (ndarray): Locations of positive peaks
-                - pos_pks (ndarray): Values of positive peaks
-                
-        Notes:
-            Processes .abf files to extract synchronization signals
-            Uses peak detection to identify iteration boundaries
-            Rounds peak values for consistent comparison
-        """
-        digidata_its = []
-        # Find all .abf files containing the sync string
-        files = [f for f in os.listdir(sync_base_path) if string in f and f.endswith('.abf')]
-        
-        for file_ind, filename in enumerate(files, start=1):
-            # Load the synchronization data
-            reader = AxonIO(os.path.join(sync_base_path, filename))
-            segments = reader.read_block().segments[0]
-            # Get the data and transpose it to match MATLAB's orientation
-            sync_data = segments.analogsignals[2][:, virmen_channel].magnitude.flatten().T
-            sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
-            
-            # Convert to double precision (float in Python)
-            sync_data = sync_data.astype(float)
-            
-            # Find peaks in absolute values (equivalent to MATLAB's findpeaks)
-            abs_peaks, abs_properties = find_peaks(np.abs(sync_data), 
-                                                height=0.09, 
-                                                distance=5)
-            
-            # Find positive peaks
-            pos_peaks, pos_properties = find_peaks(sync_data, 
-                                                height=0.09, 
-                                                distance=5)
-            
-            # Calculate gaps between iterations
-            it_gaps = np.diff(abs_peaks)
-            
-            # Store results in dictionary (similar to MATLAB struct)
-            digidata_its.append({
-                "locs": abs_peaks,  # Changed from abs_locs to abs_peaks
-                "it_gaps": it_gaps,
-                "sync_sampling_rate": sync_sampling_rate,
-                "directory": os.path.join(sync_base_path, filename),
-                "pos_loc": pos_peaks,  # Changed from pos_locs to pos_peaks
-                "pos_pks": np.round(sync_data[pos_peaks], 1)  # Get actual peak values
-            })
-
-        return digidata_its
-
-    def virmen_it_rough_estimation(self, data):
-        """
-        Use virmen iterations to get rough estimate of which iterations are specific trial events
-        based on stereotyped gaps between them.
-        
-        Args:
-            self: Instance of alignment class
-            data (dict): Dictionary containing data fields, specifically data['data'] as numpy array
-            
-        Returns:
-            tuple: (trial_its, trial_its_time) - Dictionaries containing trial iteration info
-        """
-        # Constants
-        threshold = 350  # lowest value for this mouse ~454 in 500 maze
-        
-        # Convert data to numpy array if it isn't already
-        virmen_data = np.array(data['data'])
-        
-        # Find ITI transitions
-        iti_diff = np.diff(virmen_data[8, :])  # Using 8 instead of 9 due to 0-based indexing
-        start_iti_its = np.where(iti_diff > 0)[0] + 1
-        end_iti_its = np.where(iti_diff < 0)[0]
-        start_trial_its = end_iti_its + 1
-        
-        # Add first trial
-        start_trial_its = np.sort(np.append(start_trial_its, [0]))  # Using 0 instead of 1 for Python indexing
-        end_trial_its = start_iti_its - 1
-        
-        # Create trial_its dictionary
-        trial_its = {
-            'end_trial_its': end_trial_its,
-            'start_iti_its': start_iti_its,
-            'end_iti_its': end_iti_its
-        }
-        
-        # Get complete trials
-        min_trials = min(len(end_trial_its), len(start_trial_its))
-        if len(start_trial_its) > min_trials:
-            start_trial_its = start_trial_its[:-1]
-        trial_its['start_trial_its'] = start_trial_its
-        
-        # Convert iteration timing info
-        it_times = virmen_data[0, :] * 86400  # convert to seconds
-        it_time_gaps = np.diff(it_times)
-        
-        # Find different trial events based on time gaps
-        end_trial_idx = np.where(it_time_gaps > 0.8)[0]
-        start_iti_idx = end_trial_idx + 1
-        incorrect_idx = np.where((it_time_gaps > 0.8) & (it_time_gaps < 0.95))[0]
-        correct_idx = np.where(it_time_gaps > 0.95)[0]
-        temp_its = np.where((it_time_gaps > 0.25) & (it_time_gaps < 0.51))[0] + 1
-        
-        # Create trial_its_time dictionary
-        trial_its_time = {
-            'start_trial_its_time': np.append([it_times[0]], it_times[temp_its]),
-            'end_trial_its_time': it_times[end_trial_idx],
-            'start_iti_its_time': it_times[start_iti_idx],
-            'correct_its_its_time': it_times[correct_idx],
-            'incorrect_its_time': it_times[incorrect_idx]
-        }
-        
-        # Process sound triggers
-        y_pos = virmen_data[2, :]  # Using 2 instead of 3 due to 0-based indexing
-        temp_onset = np.sort(np.concatenate([
-            np.where(np.round(np.floor(y_pos)) == 50)[0],
-            np.where(np.round(np.floor(y_pos)) == 51)[0],
-            np.where(np.round(np.floor(y_pos)) == 52)[0]
-        ]))
-        
-        # Find sound triggers for each trial
-        sound_trigger_its = []
-        for t in range(min(len(trial_its['start_trial_its']), len(trial_its['end_trial_its']))):
-            trial_mask = (temp_onset > trial_its['start_trial_its'][t]) & (temp_onset < trial_its['end_trial_its'][t])
-            if np.any(trial_mask):
-                sound_trigger_its.append(temp_onset[trial_mask][0])  # Get first occurrence
-        
-        trial_its['sound_trigger_its'] = np.array(sound_trigger_its)
-        
-        return trial_its, trial_its_time
-
-    def virmen_it_rough_estimation_adjusted(self, data, sampling_rate, it_times, it_values):
-        """
-        Adjust trial iteration estimates using timing information.
-        
-        Args:
-            self: Instance of alignment class
-            data (dict): Dictionary containing virmen data
-            sampling_rate (float): Sampling rate of the recording
-            it_times (numpy.ndarray): Array of iteration times
-            it_values (numpy.ndarray): Array of iteration values
+            dff (ndarray): Delta F/F calcium imaging data (neurons x time)
+            deconv (ndarray): Deconvolved calcium imaging data (neurons x time)
+            virmen_aq (list): List of dictionaries containing VirMEn acquisition data
+            alignment_info (list): List of dictionaries with frame timing information
+            data (dict): Raw VirMEn data dictionary
+            dataCell (dict): Processed VirMEn data organized by trials
         
         Returns:
-            tuple: (trial_its, trial_its_time) - Dictionaries containing adjusted trial iteration info
+            dict: Dictionary where each key is 'trial_X' containing:
+                - start_it: Trial start iteration
+                - end_it: Trial end iteration
+                - iti_start_it: ITI start iteration
+                - iti_end_it: ITI end iteration
+                - virmen_trial_info: Dictionary of trial behavioral data
+                - frame_id: Imaging frame IDs for this trial
+                - dff: Delta F/F data for this trial
+                - z_dff: Z-scored Delta F/F data for this trial
+                - deconv: Deconvolved data for this trial
+                - relative_frames: Frame indices relative to session start
+                - file_num: Recording file number
+                - movement_in_virmen_time: Movement data in VirMEn time
+                - movement_in_imaging_time: Movement data aligned to imaging frames
+                - good_trial: Flag indicating valid trial (1) or not (0)
         """
-        # Convert inputs to numpy arrays if they aren't already
-        iterations_in_time = np.array(it_times)
-        it_values = np.array(it_values)
+        # Z-score dff (assumes neurons x time)
+        z_dff = scipy.stats.zscore(dff, axis=1)
         
-        # Find ITI transitions
-        iti_diff = np.diff(data['data'][8, :])  # Using 8 instead of 9 for 0-based indexing
-        start_iti_its = np.where(iti_diff > 0)[0] + 2  # +2 because it seems one earlier than it should be
-        end_iti_its = np.where(iti_diff < 0)[0]
-        start_trial_its = end_iti_its + 3
+        # Extract the data array from the MATLAB structure
+        virmen_data = data['data']
         
-        # Add first trial and sort
-        start_trial_its = np.sort(np.append(start_trial_its, [0]))  # Using 0 instead of 1 for Python indexing
-        end_trial_its = start_iti_its - 1
+        # Initialize the imaging dictionary
+        imaging = {}
         
-        # Get complete trials
-        min_trials = min(len(end_trial_its), len(start_trial_its))
-        if len(start_trial_its) > min_trials:
-            start_trial_its = start_trial_its[:-1]
-        
-        # Find gaps in iterations
-        time_diffs = np.diff(iterations_in_time)
-        large_gaps = np.where(time_diffs > 0.7 * sampling_rate)[0]
-        gap_iterations = it_values[large_gaps]
-        iteration_threshold = 8  # Used to move ITI iterations to the next gap
-        
-        # Adjust end trial iterations based on large gaps
-        for g in range(len(large_gaps)):
-            # Find closest end trial iteration
-            current_gap_idx = np.argmin(np.abs(gap_iterations[g] - end_trial_its))
-            val = np.min(np.abs(gap_iterations[g] - end_trial_its))
-            
-            if val < iteration_threshold:
-                end_trial_its[current_gap_idx] = gap_iterations[g]
-        
-        # Find medium gaps (between 70ms and 700ms)
-        medium_gaps = np.where((time_diffs > 0.07 * sampling_rate) & 
-                            (time_diffs < 0.7 * sampling_rate))[0]
-        gap_iterations = it_values[medium_gaps]
-        
-        # Adjust end ITI iterations based on medium gaps
-        for g in range(len(medium_gaps)):
-            current_gap_idx = np.argmin(np.abs(gap_iterations[g] - end_iti_its))
-            val = np.min(np.abs(gap_iterations[g] - end_iti_its))
-            
-            if val < iteration_threshold and (gap_iterations[g] - end_iti_its[current_gap_idx]) >= 0:
-                end_iti_its[current_gap_idx] = gap_iterations[g]
-        
-        # Create output dictionaries
-        trial_its = {
-            'end_trial_its': end_trial_its,
-            'start_iti_its': start_iti_its,
-            'end_iti_its': end_iti_its,
-            'start_trial_its': start_trial_its
-        }
-        
-        # Create trial_its_time (if needed, similar to previous function)
-        trial_its_time = {}  # Add time-based calculations if needed
-        
-        return trial_its, trial_its_time
+        # Previous frames are used to index properly into dff and deconv traces
+        # which have a length corresponding to the amount of imaged frames and are 
+        # not broken into individual acquisitions
+        file_ind = 0
+        previous_frames_sum = 0
+        previous_frames_temp = 0
+        previous_frames = 0
 
-    def get_virmen_iterations_and_times_digidata_positive_peaks(self, base, virmen_channel_number, string, 
-                                                                    sound_condition_array, data, file_trial_ids, 
-                                                                    file_estimated_trial_info):
-        """
-        Extract virmen iterations and timing information from digidata files using positive peaks.
         
-        Args:
-            self: Instance of alignment class
-            base (str): Base directory path containing sync files
-            virmen_channel_number (int): Channel number for virmen data
-            string (str): String identifier for sync files
-            sound_condition_array (list): Array of sound condition information
-            data (dict): Dictionary containing virmen data
-            file_trial_ids (list): List of trial IDs for each file
-            file_estimated_trial_info (dict): Dictionary of estimated trial information
-            
-        Returns:
-            tuple: (acquisitions, updated_trial_its, sound_condition_array)
-                - acquisitions (list): List of dictionaries containing processed data for each file
-                - updated_trial_its (dict): Updated trial iteration information
-                - sound_condition_array (list): Updated sound condition information
-        """
-        acquisitions = []
+        # Get number of trials
+        num_trials = len(dataCell)
         
-        # Get list of sync files
-        # sync_files = [f for f in os.listdir(base) if string in f and f.endswith('.abf')] # akhil method
-        sync_files = [f for f in os.listdir(base) if f.endswith('.abf')]
-
-        num_files = len(sync_files)
-
-        for n in range(num_files):
-            file_ind = n
-            sync_file_path = os.path.join(base, sync_files[n])
+        # Iterate through trials
+        for vr_trial in range(1, num_trials):
+            current_trial = f'trial_{vr_trial}'
+            next_trial = f'trial_{vr_trial + 1}'
             
-            # Load sync data
-            reader = AxonIO(sync_file_path)
-            segments = reader.read_block().segments[0]
-            #sync_data = segments.analogsignals[2][:, 1].magnitude.flatten()
-            sync_data = segments.analogsignals[2][:, 3].magnitude.flatten()
-            sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
+            # Get trial start and end times
+            start_time = dataCell[current_trial]['start']
+            stop_time = dataCell[current_trial]['stop']
             
-            # Process temp signal
-            temp = sync_data
-            temp = temp - np.median(temp)
-            
-            # Find peaks with adjusted parameters
-            peaks, properties = find_peaks(np.abs(temp), 
-                                         height=0.09,
-                                         distance=5)
-            
-            if len(peaks) == 0:
-                print(f"No peaks found in file {sync_files[n]}")
-                continue
-                
-            # Normalize peaks
-            temp = temp / np.abs(np.mean(temp[peaks]))
-            
-            # Adjust peak locations by adding 1
-            #peaks = peaks + 1
-            
-            it_values = temp[peaks]
-            it_times = peaks
-
-            # Find positive peaks
-            marked_its = np.where(it_values > 0)[0]
-            if len(marked_its) == 0:
-                print(f"No positive peaks found in file {sync_files[n]}")
-                continue
-
-            # Initialize actual_it_values
-            actual_it_values = np.zeros(len(it_values))
-            
-            # Process first iteration with adjusted rounding
-            if round(it_values[marked_its[0]], 0) == 10:
-                actual_it_values[marked_its[0]] = 1
+            # Get next trial start time if it exists
+            if next_trial in dataCell:
+                next_start_time = dataCell[next_trial]['start']
             else:
-                actual_it_values[marked_its[0]] = round((it_values[marked_its[0]] * 1e5) / 1e4) * 1e4
-                
-                # Process previous iterations
-                next_value = actual_it_values[marked_its[0]]
-                for it in range(marked_its[0] - 1, -1, -1):
-                    actual_it_values[it] = next_value - 1
-                    next_value = actual_it_values[it]
-
-            # Process remaining iterations
-            previous_value = actual_it_values[marked_its[0]] - 1
-            for it in range(marked_its[0] + 1, len(it_values)):
-                actual_it_values[it] = previous_value + 1
-                previous_value = actual_it_values[it]
-
-            # Initialize possible_it_locs
-            if file_trial_ids:
-                start_trial_number = file_trial_ids[file_ind][0]
-                end_trial_number = file_trial_ids[file_ind][1]
-                
-                # Get possible iterations within file limits
-                #possible_iterations = range(
-                #    updated_trial_its['start_trial_its'][start_trial_number],
-                #    updated_trial_its['end_iti_its'][end_trial_number] + 1
-                #)
-                possible_it_locs = np.where(np.isin(actual_it_values))[0]
-            else:
-                possible_it_locs = None
-
-            # Store results
-            acquisition = {
-                'actual_it_values': actual_it_values[possible_it_locs] if possible_it_locs is not None else actual_it_values,
-                'it_times': it_times[possible_it_locs] if possible_it_locs is not None else it_times,
-                'directory': sync_files[file_ind]
+                continue
+            
+            # Find corresponding iterations for trial start and end points in VIRMEN data
+            start_it = np.argmin(np.abs(virmen_data[0, :] - start_time)) + 1
+            end_it = np.argmin(np.abs(virmen_data[0, :] - stop_time)) + 1
+            iti_end_it = np.argmin(np.abs(virmen_data[0, :] - next_start_time))
+            iti_start_it = end_it + 1
+        
+            
+            # Initialize the trial dictionary
+            imaging[current_trial] = {
+                'start_it': start_it,
+                'end_it': end_it,
+                'iti_start_it': iti_start_it,
+                'iti_end_it': iti_end_it,
+                'virmen_trial_info': {
+                    'correct': dataCell[current_trial]['correct'],
+                    'left_turn': dataCell[current_trial]['leftTurn'],
+                    'condition': dataCell[current_trial]['condition']
+                },
+                'dff': np.NaN,
+                'z_dff': np.NaN,
+                'deconv': np.NaN,
+                'relative_frames': np.NaN,
+                'file_num': np.NaN,
+                'movement_in_virmen_time': np.NaN,
+                'frame_id': np.NaN,
+                'movement_in_imaging_time': np.NaN,
+                'good_trial': np.NaN
             }
             
-            if sound_condition_array:
-                sound_onsets = sound_condition_array[file_ind]['VR_sounds'][:, 1]
-                sound_onsets = sound_onsets[~np.isnan(sound_onsets)]
-                acquisition['sound_trigger_time'] = sound_onsets
+            # Check if trial is within bounds
+            # Look in current sync file bounds for the absolute iterations which correspond to the current trial
+            # If they exist within this file, fill in the imaging structure
+            if (start_it >= virmen_aq[file_ind]['actual_it_values'][0] and 
+                end_it < virmen_aq[file_ind]['actual_it_values'][-1]):
                 
-            acquisitions.append(acquisition)
+                # Create output data dictionary
+                output_data = {
+                    'frame_times': alignment_info[file_ind]['frame_times'], # frame times in pclamp time 
+                    'iteration_times': virmen_aq[file_ind]['it_times'], # iteration times in pclamp time 
+                    'iteration_ids': virmen_aq[file_ind]['actual_it_values'] # iteration values relative to virmen 'data' matrix 
+                }
+                
+                # Check if trial full length of the trial is within frame limits
+                # sync files should contain virmen iterations for the full length of the file, but not neccessarily frames
+                if (iti_end_it <= output_data['iteration_ids'][-1] and
+                    any(output_data['iteration_times'][output_data['iteration_ids'] == start_it] >= output_data['frame_times'][0]) and
+                    any(output_data['iteration_times'][output_data['iteration_ids'] == end_it] <= alignment_info[file_ind]['frame_times'][-1])):
+                    
+                    # Get movement data from the virmen data matrix 
+                    # movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
+                    movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
 
-            # Optional plotting
-            plt.figure(2)
-            plt.clf()
-            plt.plot(temp)
-            plt.plot(it_times[marked_its], np.zeros_like(marked_its), 'c*')
-            plt.pause(0.1)
+                    imaging[current_trial]['movement_in_virmen_time'] = movement_data
+                    
+                    # Get frame IDs corresponding to virmen iterations
+                    # frame_ids = self.get_frame_ids(output_data, start_it, iti_end_it)
+                    frame_ids = self.get_frame_ids(output_data, start_it, iti_end_it)
 
-        # Final plot
-        plt.figure(3)
-        plt.clf()
-        plt.title('virmen iteration values across files')
-        for acq in acquisitions:
-            plt.plot(acq['it_times'], acq['actual_it_values'])
-        plt.show()
+                    if len(frame_ids) == 0:
+                        print(f"Skipping trial {vr_trial} due to missing frame IDs")
+                        continue
+                        
+                    imaging[current_trial]['frame_id'] = frame_ids
+                    
+                    # Get neural activity
+                    maze_start_frame = frame_ids[0]
+                    iti_end_frame = frame_ids[-1]
+                    
+                    # Update trial dictionary with neural data
+                    imaging[current_trial].update({
+                        'dff': dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
+                        'z_dff': z_dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
+                        'deconv': deconv[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
+                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1), ## ISSUE HERE?? WHY PLUS 1??
+                        'file_num': file_ind
+                    })
+                    
+                    # Add movement in imaging time
+                    # movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
+                    movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
 
-        return acquisitions, None, sound_condition_array  # Replace None with updated_trial_its if needed
+                    imaging[current_trial]['movement_in_imaging_time'] = movement_imaging
+                    
+                    imaging[current_trial]['good_trial'] = 1
+
+            # continue if we have not yet reached trials within the current sync file        
+            elif start_it < virmen_aq[file_ind]['actual_it_values'][0]:
+                continue
+                
+            elif file_ind < len(virmen_aq) - 1:
+                file_ind += 1
+                if file_ind == 0:
+                    previous_frames_temp = 0
+                else:
+                    previous_frames_temp = len(alignment_info[file_ind - 1]['frame_times'])
+                previous_frames = np.append(previous_frames, previous_frames_temp)
+                previous_frames_sum = np.sum(previous_frames)
+        
+        return imaging
+
+    def sound_alignment_imaging(self, imaging, alignment_info, sync_base_path,speaker_1,speaker_2):
+        # NEED TO ADD SECOND SPEAKER ALIGNMENT IF SPEAKER OUTPUT IS RECORDED
+        files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf')]
+        sync_data = self.load_sync_data(os.path.join(sync_base_path,files[0]))
+
+        for trial in imaging:
+            current = imaging[trial]
+            
+            if current['good_trial'] and not np.isnan(current['relative_frames']).any():
+
+                # checking to see if we're still in the same file, update if not
+                if not file_num == current['file_num']:
+                    file_num = current['file_num']
+                    sync_data = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
+                    frame_times = alignment_info[file_num]['frame_times']
+
+                # if given the channel numbers of the speakers, add sound traces to imaging structure
+                if len(speaker_1)>0:
+                    sound_trace = sync_data[frame_times,speaker_1]
+                    imaging[trial]['speaker_1'] = sound_trace[current['relative_frames']%10000]
+                if len(speaker_2)>0:
+                    sound_trace = sync_data[frame_times,speaker_2]
+                    imaging[trial]['speaker_2'] = sound_trace[current['relative_frames']%10000]
+
+                # Sound onset should be at 50 virmen units
+                temp_onset = (np.floor(current['movement_in_imaging_time']['y_position']) > 48) & (np.floor(current['movement_in_imaging_time']['y_position']) < 51)
+                temp_onset = np.where(temp_onset)[0]
+                imaging[trial]['sound_onset'] = temp_onset
+
+        return imaging
     
+    def align_virmen_data_behavior_only(self, virmen_aq, data, dataCell):
+        """
+        Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
+        
+        Args:
+            self: Instance of alignment class
+            virmen_aq (list): List of dictionaries containing VirMEn acquisition data
+            data (dict): Raw VirMEn data dictionary
+            dataCell (dict): Processed VirMEn data organized by trials
+        
+        Returns:
+            dict: Dictionary where each key is 'trial_X' containing:
+                - start_it: Trial start iteration
+                - end_it: Trial end iteration
+                - iti_start_it: ITI start iteration
+                - iti_end_it: ITI end iteration
+                - virmen_trial_info: Dictionary of trial behavioral data
+                - file_num: Recording file number
+                - movement_in_virmen_time: Movement data in VirMEn time
+                - good_trial: Flag indicating valid trial (1) or not (0)
+        """
+        
+        # Extract the data array from the MATLAB structure
+        virmen_data = data['data']
+        
+        # Initialize the imaging dictionary
+        behavior = {}
+        
+        # Previous frames are used to index properly into dff and deconv traces
+        # which have a length corresponding to the amount of imaged frames and are 
+        # not broken into individual acquisitions
+        file_ind = 0
+
+        # Get number of trials
+        num_trials = len(dataCell)
+        
+        # Iterate through trials
+        for vr_trial in range(1, num_trials):
+            current_trial = f'trial_{vr_trial}'
+            next_trial = f'trial_{vr_trial + 1}'
+            
+            # Get trial start and end times
+            start_time = dataCell[current_trial]['start']
+            stop_time = dataCell[current_trial]['stop']
+            
+            # Get next trial start time if it exists
+            if next_trial in dataCell:
+                next_start_time = dataCell[next_trial]['start']
+            else:
+                continue
+            
+            # Find corresponding iterations for trial start and end points in VIRMEN data
+            start_it = np.argmin(np.abs(virmen_data[0, :] - start_time)) + 1
+            end_it = np.argmin(np.abs(virmen_data[0, :] - stop_time)) + 1
+            iti_end_it = np.argmin(np.abs(virmen_data[0, :] - next_start_time))
+            iti_start_it = end_it + 1
+        
+            
+        # Initialize the trial dictionary
+            behavior[current_trial] = {
+                'start_it': start_it,
+                'end_it': end_it,
+                'iti_start_it': iti_start_it,
+                'iti_end_it': iti_end_it,
+                'virmen_trial_info': {
+                    'correct': dataCell[current_trial]['correct'],
+                    'left_turn': dataCell[current_trial]['leftTurn'],
+                    'condition': dataCell[current_trial]['condition']
+                },
+                'file_num': np.NaN,
+                'movement_in_virmen_time': np.NaN,
+                'good_trial': np.NaN
+            }
+
+            # Check if trial is within bounds
+            # Look in current sync file bounds for the absolute iterations which correspond to the current trial
+            # If they exist within this file, file in the imaging structure
+            if (start_it >= virmen_aq[file_ind]['actual_it_values'][0] and 
+                end_it < virmen_aq[file_ind]['actual_it_values'][-1]):          
+                
+                # Check if trial full length of the trial is within frame limits
+                # sync files should contain virmen iterations for the full length of the file, but not neccessarily frames
+                
+                    
+                # Get movement data from the virmen data matrix 
+                # movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
+                movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
+                behavior[current_trial]['movement_in_virmen_time'] = movement_data
+
+
+                x1 = np.where(virmen_aq[file_ind]['actual_it_values']==start_it)[0]
+                x2 = np.where(virmen_aq[file_ind]['actual_it_values']==iti_end_it)[0]
+
+                if len(x1) >0 and len(x2)>0:
+                    pclamp_inds = np.arange(virmen_aq[file_ind]['it_times'][x1[0]],virmen_aq[file_ind]['it_times'][x2[0]])
+                    behavior[current_trial]['pclamp_inds'] = pclamp_inds
+
+                    behavior[current_trial]['it_times'] =virmen_aq[file_ind]['it_times'][x1[0]:x2[0]+1]
+                    
+                    behavior[current_trial]['good_trial'] = 1
+
+                # movement_data_pclamp = align_movement_to_pclamp([], movement_data, pclamp_inds, virmen_aq[file_ind]['it_times'],start_it,iti_end_it)
+
+                # Update trial dictionary
+                behavior[current_trial].update({
+                    'file_num': file_ind
+                })
+                    
+            # continue if we have not yet reached trials within the current sync file        
+            elif start_it < virmen_aq[file_ind]['actual_it_values'][0]:
+                continue
+                
+            elif file_ind < len(virmen_aq) - 1:
+                file_ind += 1
+                
+        return behavior
+
+    # 'PRIVATE' methods (not actually made private, but are only called internally)
     def get_movement_data(self, data, start_it, iti_end_it):
         """
         Extract movement-related data for a specific trial period.
@@ -903,6 +994,10 @@ class alignment:
         }
         
         # Fill in movement data
+        # transforms movement data into imaging time from virmen 'data' time
+        # the behavior values from the first iteration in the bound of a frame 
+        # are assigned to that frame. If no iteration corresponds to a frame, 
+        # nans are assigned. 
         for frame in range(num_frames):
             idx = np.where(frame_ids - frame_ids[0] + 1 == frame + 1)[0]
             if len(idx) > 0:
@@ -916,172 +1011,380 @@ class alignment:
         
         return movement_imaging
 
-    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell, trial_its, stimulus_info=None, reward_info=None):
+    def load_sync_data(self, handle):
+
+        abf = pyabf.ABF(handle)
+        # Get number of channels
+        num_channels = abf.channelCount
+        sampling_rate = abf.sampleRate
+
+        # Create array to store all channel data
+        sync_data = np.zeros((len(abf.sweepY), num_channels))
+
+        # Load data from each channel
+        for ch in range(num_channels):
+            abf.setSweep(0, channel=ch)
+            sync_data[:, ch] = abf.sweepY
+
+        return sync_data,sampling_rate
+    
+    # UNUSED METHODS, COULD BE HELPFUL FOR DEBUGGING IN THE FUTURE
+    # CURRENTLY NOT ACCESSABLE FROM OUTSIDE OF THE CLASS
+    def __get_digidata_iterations(self, sync_base_path, string, virmen_channel):
+            """
+            Extract iteration timing information from DigiData synchronization files.
+            
+            Args:
+                self: Instance of alignment class
+                sync_base_path (str): Path to the synchronization files directory
+                string (str): String identifier for sync files
+                virmen_channel (int): Channel number for VirMEn data
+                
+            Returns:
+                list: List of dictionaries containing iteration information for each file:
+                    - locs (ndarray): Locations of absolute peaks
+                    - it_gaps (ndarray): Gaps between iterations
+                    - sync_sampling_rate (float): Sampling rate of sync signal
+                    - directory (str): Full path to sync file
+                    - pos_loc (ndarray): Locations of positive peaks
+                    - pos_pks (ndarray): Values of positive peaks
+                    
+            Notes:
+                Processes .abf files to extract synchronization signals
+                Uses peak detection to identify iteration boundaries
+                Rounds peak values for consistent comparison
+            """
+            digidata_its = []
+            # Find all .abf files containing the sync string
+            # files = [f for f in os.listdir(sync_base_path) if string in f and f.endswith('.abf')]
+            files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf')]
+
+            
+            for file_ind, filename in enumerate(files, start=1):
+                # Load the synchronization data
+                reader = AxonIO(os.path.join(sync_base_path, filename))
+                segments = reader.read_block().segments[0]
+                # Get the data and transpose it to match MATLAB's orientation
+                sync_data = segments.analogsignals[2][:, virmen_channel].magnitude.flatten().T
+                sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
+                
+                # Convert to double precision (float in Python)
+                sync_data = sync_data.astype(float)
+                
+                # Find peaks in absolute values (equivalent to MATLAB's findpeaks)
+                abs_peaks, abs_properties = find_peaks(np.abs(sync_data), 
+                                                    height=0.09, 
+                                                    distance=5)
+                
+                # Find positive peaks
+                pos_peaks, pos_properties = find_peaks(sync_data, 
+                                                    height=0.09, 
+                                                    distance=5)
+                
+                # Calculate gaps between iterations
+                it_gaps = np.diff(abs_peaks)
+                
+                # Store results in dictionary (similar to MATLAB struct)
+                digidata_its.append({
+                    "locs": abs_peaks,  # Changed from abs_locs to abs_peaks
+                    "it_gaps": it_gaps,
+                    "sync_sampling_rate": sync_sampling_rate,
+                    "directory": os.path.join(sync_base_path, filename),
+                    "pos_loc": pos_peaks,  # Changed from pos_locs to pos_peaks
+                    "pos_pks": np.round(sync_data[pos_peaks], 1)  # Get actual peak values
+                })
+
+            return digidata_its
+
+    def __virmen_it_rough_estimation(self, data):
         """
-        Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
+        Use virmen iterations to get rough estimate of which iterations are specific trial events
+        based on stereotyped gaps between them.
         
         Args:
             self: Instance of alignment class
-            dff (ndarray): Delta F/F calcium imaging data (neurons x time)
-            deconv (ndarray): Deconvolved calcium imaging data (neurons x time)
-            virmen_aq (list): List of dictionaries containing VirMEn acquisition data
-            alignment_info (list): List of dictionaries with frame timing information
-            data (dict): Raw VirMEn data dictionary
-            dataCell (dict): Processed VirMEn data organized by trials
-            trial_its (dict): Trial iteration information
-            stimulus_info (dict, optional): Additional stimulus information
-            reward_info (dict, optional): Additional reward information
+            data (dict): Dictionary containing data fields, specifically data['data'] as numpy array
             
         Returns:
-            dict: Dictionary where each key is 'trial_X' containing:
-                - start_it: Trial start iteration
-                - end_it: Trial end iteration
-                - iti_start_it: ITI start iteration
-                - iti_end_it: ITI end iteration
-                - virmen_trial_info: Dictionary of trial behavioral data
-                - frame_id: Imaging frame IDs for this trial
-                - dff: Delta F/F data for this trial
-                - z_dff: Z-scored Delta F/F data for this trial
-                - deconv: Deconvolved data for this trial
-                - relative_frames: Frame indices relative to session start
-                - file_num: Recording file number
-                - movement_in_virmen_time: Movement data in VirMEn time
-                - movement_in_imaging_time: Movement data aligned to imaging frames
-                - good_trial: Flag indicating valid trial (1) or not (0)
+            tuple: (trial_its, trial_its_time) - Dictionaries containing trial iteration info
         """
-        # Z-score dff (assumes neurons x time)
-        z_dff = scipy.stats.zscore(dff, axis=1)
+        # Constants
+        threshold = 350  # lowest value for this mouse ~454 in 500 maze
         
-        # Extract the data array from the MATLAB structure
-        virmen_data = data['data']
+        # Convert data to numpy array if it isn't already
+        virmen_data = np.array(data['data'])
         
-        # Initialize the imaging dictionary
-        imaging = {}
+        # Find ITI transitions
+        iti_diff = np.diff(virmen_data[8, :])  # Using 8 instead of 9 due to 0-based indexing
+        start_iti_its = np.where(iti_diff > 0)[0] + 1
+        end_iti_its = np.where(iti_diff < 0)[0]
+        start_trial_its = end_iti_its + 1
         
-        file_ind = 0
-        previous_frames_sum = 0
-        previous_frames_temp = 0
-        previous_frames = 0
-        turning_threshold = 0.1
-        weird_trials = []
+        # Add first trial
+        start_trial_its = np.sort(np.append(start_trial_its, [0]))  # Using 0 instead of 1 for Python indexing
+        end_trial_its = start_iti_its - 1
         
-        # Get number of trials
-        num_trials = len(dataCell)
+        # Create trial_its dictionary
+        trial_its = {
+            'end_trial_its': end_trial_its,
+            'start_iti_its': start_iti_its,
+            'end_iti_its': end_iti_its
+        }
         
-        # Iterate through trials
-        for vr_trial in range(1, num_trials):
-            current_trial = f'trial_{vr_trial}'
-            next_trial = f'trial_{vr_trial + 1}'
-            
-            # Get trial start and end times
-            start_time = dataCell[current_trial]['start']
-            stop_time = dataCell[current_trial]['stop']
-            
-            # Get next trial start time if it exists
-            if next_trial in dataCell:
-                next_start_time = dataCell[next_trial]['start']
-            else:
-                continue
-            
-            # Find corresponding iterations
-            y = np.argmin(np.abs(virmen_data[0, :] - start_time)) + 1
-            y2 = np.argmin(np.abs(virmen_data[0, :] - stop_time)) + 1
-            yy = np.argmin(np.abs(virmen_data[0, :] - next_start_time))
-            
-            start_it = y
-            end_it = y2
-            iti_start_it = y2 + 1
-            iti_end_it = yy
-            
-            # Initialize the trial dictionary
-            prefix = 'Trial_'
-            # dict_key = f"{prefix}{int(current_trial.split('_')[1]):03}"
+        # Get complete trials
+        min_trials = min(len(end_trial_its), len(start_trial_its))
+        if len(start_trial_its) > min_trials:
+            start_trial_its = start_trial_its[:-1]
+        trial_its['start_trial_its'] = start_trial_its
+        
+        # Convert iteration timing info
+        it_times = virmen_data[0, :] * 86400  # convert to seconds
+        it_time_gaps = np.diff(it_times)
+        
+        # Find different trial events based on time gaps
+        end_trial_idx = np.where(it_time_gaps > 0.8)[0]
+        start_iti_idx = end_trial_idx + 1
+        incorrect_idx = np.where((it_time_gaps > 0.8) & (it_time_gaps < 0.95))[0]
+        correct_idx = np.where(it_time_gaps > 0.95)[0]
+        temp_its = np.where((it_time_gaps > 0.25) & (it_time_gaps < 0.51))[0] + 1
+        
+        # Create trial_its_time dictionary
+        trial_its_time = {
+            'start_trial_its_time': np.append([it_times[0]], it_times[temp_its]),
+            'end_trial_its_time': it_times[end_trial_idx],
+            'start_iti_its_time': it_times[start_iti_idx],
+            'correct_its_its_time': it_times[correct_idx],
+            'incorrect_its_time': it_times[incorrect_idx]
+        }
+        
+        # Process sound triggers
+        y_pos = virmen_data[2, :]  # Using 2 instead of 3 due to 0-based indexing
+        temp_onset = np.sort(np.concatenate([
+            np.where(np.round(np.floor(y_pos)) == 50)[0],
+            np.where(np.round(np.floor(y_pos)) == 51)[0],
+            np.where(np.round(np.floor(y_pos)) == 52)[0]
+        ]))
+        
+        # Find sound triggers for each trial
+        sound_trigger_its = []
+        for t in range(min(len(trial_its['start_trial_its']), len(trial_its['end_trial_its']))):
+            trial_mask = (temp_onset > trial_its['start_trial_its'][t]) & (temp_onset < trial_its['end_trial_its'][t])
+            if np.any(trial_mask):
+                sound_trigger_its.append(temp_onset[trial_mask][0])  # Get first occurrence
+        
+        trial_its['sound_trigger_its'] = np.array(sound_trigger_its)
+        
+        return trial_its, trial_its_time
 
-            imaging[current_trial] = {
-                'start_it': start_it,
-                'end_it': end_it,
-                'iti_start_it': iti_start_it,
-                'iti_end_it': iti_end_it,
-                'virmen_trial_info': {
-                    'correct': dataCell[current_trial]['correct'],
-                    'left_turn': dataCell[current_trial]['leftTurn'],
-                    'condition': dataCell[current_trial]['condition']
-                },
-                'dff': np.NaN,
-                'z_dff': np.NaN,
-                'deconv': np.NaN,
-                'relative_frames': np.NaN,
-                'file_num': np.NaN,
-                'movement_in_virmen_time': np.NaN,
-                'frame_id': np.NaN,
-                'movement_in_imaging_time': np.NaN,
-                'good_trial': np.NaN
+    def __virmen_it_rough_estimation_adjusted(self, data, sampling_rate, it_times, it_values):
+        """
+        Adjust trial iteration estimates using timing information.
+        
+        Args:
+            self: Instance of alignment class
+            data (dict): Dictionary containing virmen data
+            sampling_rate (float): Sampling rate of the recording
+            it_times (numpy.ndarray): Array of iteration times
+            it_values (numpy.ndarray): Array of iteration values
+        
+        Returns:
+            tuple: (trial_its, trial_its_time) - Dictionaries containing adjusted trial iteration info
+        """
+        # Convert inputs to numpy arrays if they aren't already
+        iterations_in_time = np.array(it_times)
+        it_values = np.array(it_values)
+        
+        # Find ITI transitions
+        iti_diff = np.diff(data['data'][8, :])  # Using 8 instead of 9 for 0-based indexing
+        start_iti_its = np.where(iti_diff > 0)[0] + 2  # +2 because it seems one earlier than it should be
+        end_iti_its = np.where(iti_diff < 0)[0]
+        start_trial_its = end_iti_its + 3
+        
+        # Add first trial and sort
+        start_trial_its = np.sort(np.append(start_trial_its, [0]))  # Using 0 instead of 1 for Python indexing
+        end_trial_its = start_iti_its - 1
+        
+        # Get complete trials
+        min_trials = min(len(end_trial_its), len(start_trial_its))
+        if len(start_trial_its) > min_trials:
+            start_trial_its = start_trial_its[:-1]
+        
+        # Find gaps in iterations
+        time_diffs = np.diff(iterations_in_time)
+        large_gaps = np.where(time_diffs > 0.7 * sampling_rate)[0]
+        gap_iterations = it_values[large_gaps]
+        iteration_threshold = 8  # Used to move ITI iterations to the next gap
+        
+        # Adjust end trial iterations based on large gaps
+        for g in range(len(large_gaps)):
+            # Find closest end trial iteration
+            current_gap_idx = np.argmin(np.abs(gap_iterations[g] - end_trial_its))
+            val = np.min(np.abs(gap_iterations[g] - end_trial_its))
+            
+            if val < iteration_threshold:
+                end_trial_its[current_gap_idx] = gap_iterations[g]
+        
+        # Find medium gaps (between 70ms and 700ms)
+        medium_gaps = np.where((time_diffs > 0.07 * sampling_rate) & 
+                            (time_diffs < 0.7 * sampling_rate))[0]
+        gap_iterations = it_values[medium_gaps]
+        
+        # Adjust end ITI iterations based on medium gaps
+        for g in range(len(medium_gaps)):
+            current_gap_idx = np.argmin(np.abs(gap_iterations[g] - end_iti_its))
+            val = np.min(np.abs(gap_iterations[g] - end_iti_its))
+            
+            if val < iteration_threshold and (gap_iterations[g] - end_iti_its[current_gap_idx]) >= 0:
+                end_iti_its[current_gap_idx] = gap_iterations[g]
+        
+        # Create output dictionaries
+        trial_its = {
+            'end_trial_its': end_trial_its,
+            'start_iti_its': start_iti_its,
+            'end_iti_its': end_iti_its,
+            'start_trial_its': start_trial_its
+        }
+        
+        # Create trial_its_time (if needed, similar to previous function)
+        trial_its_time = {}  # Add time-based calculations if needed
+        
+        return trial_its, trial_its_time
+
+    def __get_virmen_iterations_and_times_digidata_positive_peaks(self, base, virmen_channel_number, string, 
+                                                                    sound_condition_array, data, file_trial_ids, 
+                                                                    file_estimated_trial_info):
+        """
+        Extract virmen iterations and timing information from digidata files using positive peaks.
+        
+        Args:
+            self: Instance of alignment class
+            base (str): Base directory path containing sync files
+            virmen_channel_number (int): Channel number for virmen data
+            string (str): String identifier for sync files
+            sound_condition_array (list): Array of sound condition information
+            data (dict): Dictionary containing virmen data
+            file_trial_ids (list): List of trial IDs for each file
+            file_estimated_trial_info (dict): Dictionary of estimated trial information
+            
+        Returns:
+            tuple: (acquisitions, updated_trial_its, sound_condition_array)
+                - acquisitions (list): List of dictionaries containing processed data for each file
+                - updated_trial_its (dict): Updated trial iteration information
+                - sound_condition_array (list): Updated sound condition information
+        """
+        acquisitions = []
+        
+        # Get list of sync files
+        # sync_files = [f for f in os.listdir(base) if string in f and f.endswith('.abf')] # akhil method
+        sync_files = [f for f in os.listdir(base) if f.endswith('.abf')]
+
+        num_files = len(sync_files)
+
+        for n in range(num_files):
+            file_ind = n
+            sync_file_path = os.path.join(base, sync_files[n])
+            
+            # Load sync data
+            reader = AxonIO(sync_file_path)
+            segments = reader.read_block().segments[0]
+            #sync_data = segments.analogsignals[2][:, 1].magnitude.flatten()
+            sync_data = segments.analogsignals[2][:, 3].magnitude.flatten()
+            sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
+            
+            # Process temp signal
+            temp = sync_data
+            temp = temp - np.median(temp)
+            
+            # Find peaks with adjusted parameters
+            peaks, properties = find_peaks(np.abs(temp), 
+                                         height=0.09,
+                                         distance=5)
+            
+            if len(peaks) == 0:
+                print(f"No peaks found in file {sync_files[n]}")
+                continue
+                
+            # Normalize peaks
+            temp = temp / np.abs(np.mean(temp[peaks]))
+            
+            # Adjust peak locations by adding 1
+            #peaks = peaks + 1
+            
+            it_values = temp[peaks]
+            it_times = peaks
+
+            # Find positive peaks
+            marked_its = np.where(it_values > 0)[0]
+            if len(marked_its) == 0:
+                print(f"No positive peaks found in file {sync_files[n]}")
+                continue
+
+            # Initialize actual_it_values
+            actual_it_values = np.zeros(len(it_values))
+            
+            # Process first iteration with adjusted rounding
+            if round(it_values[marked_its[0]], 0) == 10:
+                actual_it_values[marked_its[0]] = 1 
+            else:
+                actual_it_values[marked_its[0]] = round((it_values[marked_its[0]] * 1e5) / 1e4) * 1e4
+                
+                # Process previous iterations
+                next_value = actual_it_values[marked_its[0]]
+                for it in range(marked_its[0] - 1, -1, -1):
+                    actual_it_values[it] = next_value - 1
+                    next_value = actual_it_values[it]
+
+            # Process remaining iterations
+            previous_value = actual_it_values[marked_its[0]] - 1
+            for it in range(marked_its[0] + 1, len(it_values)):
+                actual_it_values[it] = previous_value + 1
+                previous_value = actual_it_values[it]
+
+            # Initialize possible_it_locs
+            if file_trial_ids:
+                start_trial_number = file_trial_ids[file_ind][0]
+                end_trial_number = file_trial_ids[file_ind][1]
+                
+                # Get possible iterations within file limits
+                #possible_iterations = range(
+                #    updated_trial_its['start_trial_its'][start_trial_number],
+                #    updated_trial_its['end_iti_its'][end_trial_number] + 1
+                #)
+                possible_it_locs = np.where(np.isin(actual_it_values))[0]
+            else:
+                possible_it_locs = None
+
+            # Store results
+            acquisition = {
+                'actual_it_values': actual_it_values[possible_it_locs] if possible_it_locs is not None else actual_it_values,
+                'it_times': it_times[possible_it_locs] if possible_it_locs is not None else it_times,
+                'directory': sync_files[file_ind]
             }
             
-            # Add stim trial info if available
-            if 'is_stim_trial' in dataCell[current_trial]:
-                imaging[current_trial]['virmen_trial_info']['is_stim_trial'] = dataCell[current_trial]['is_stim_trial']
-            
-            # Check if trial is within bounds
-            if (start_it >= virmen_aq[file_ind]['actual_it_values'][0] and 
-                end_it < virmen_aq[file_ind]['actual_it_values'][-1]):
+            if sound_condition_array:
+                sound_onsets = sound_condition_array[file_ind]['VR_sounds'][:, 1]
+                sound_onsets = sound_onsets[~np.isnan(sound_onsets)]
+                acquisition['sound_trigger_time'] = sound_onsets
                 
-                # Create output data dictionary
-                output_data = {
-                    'frame_times': alignment_info[file_ind]['frame_times'],
-                    'iteration_times': virmen_aq[file_ind]['it_times'],
-                    'iteration_ids': virmen_aq[file_ind]['actual_it_values']
-                }
-                
-                # Check if trial is within frame limits
-                if (iti_end_it <= output_data['iteration_ids'][-1] and
-                    any(output_data['iteration_times'][output_data['iteration_ids'] == start_it] >= output_data['frame_times'][0]) and
-                    any(output_data['iteration_times'][output_data['iteration_ids'] == end_it] <= alignment_info[file_ind]['frame_times'][-1])):
-                    
-                    # Get movement data
-                    movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
-                    imaging[current_trial]['movement_in_virmen_time'] = movement_data
-                    
-                    # Get frame IDs
-                    frame_ids = self.get_frame_ids(output_data, start_it, iti_end_it)
-                    if len(frame_ids) == 0:
-                        print(f"Skipping trial {vr_trial} due to missing frame IDs")
-                        continue
-                        
-                    imaging[current_trial]['frame_id'] = frame_ids
-                    
-                    # Get neural activity
-                    maze_start_frame = frame_ids[0]
-                    iti_end_frame = frame_ids[-1]
-                    
-                    # Update trial dictionary with neural data
-                    imaging[current_trial].update({
-                        'dff': dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
-                        'z_dff': z_dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
-                        'deconv': deconv[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
-                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1), ## ISSUE HERE?? WHY PLUS 1??
-                        'file_num': file_ind
-                    })
-                    
-                    # Add movement in imaging time
-                    movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
-                    imaging[current_trial]['movement_in_imaging_time'] = movement_imaging
-                    
-                    imaging[current_trial]['good_trial'] = 1
-                    
-            elif start_it < virmen_aq[file_ind]['actual_it_values'][0]:
-                continue
-                
-            elif file_ind < len(virmen_aq) - 1:
-                file_ind += 1
-                if file_ind == 0:
-                    previous_frames_temp = 0
-                else:
-                    previous_frames_temp = len(alignment_info[file_ind - 1]['frame_times'])
-                previous_frames = np.append(previous_frames, previous_frames_temp)
-                previous_frames_sum = np.sum(previous_frames)
-        
-        return imaging
+            acquisitions.append(acquisition)
+
+            # Optional plotting
+            plt.figure(2)
+            plt.clf()
+            plt.plot(temp)
+            plt.plot(it_times[marked_its], np.zeros_like(marked_its), 'c*')
+            plt.pause(0.1)
+
+        # Final plot
+        plt.figure(3)
+        plt.clf()
+        plt.title('virmen iteration values across files')
+        for acq in acquisitions:
+            plt.plot(acq['it_times'], acq['actual_it_values'])
+        plt.show()
+
+        return acquisitions, None, sound_condition_array  # Replace None with updated_trial_its if needed
+    
 
 class data_processing:
     """
@@ -1096,7 +1399,7 @@ class data_processing:
         'psych': {
             1: 0, 2: 15, 3: 25, 4: 65, 5: 75, 6: 90,
             7: 0, 8: 15, 9: 25, 10: 65, 11: 75, 12: 90,
-            13: 0, 14: 15, 15: 25, 16: 65, 17: 75, 18: 90
+            13: 0, 14: 15, 15: 25, 16: 65, 17: 75, 18: 90 
         },
         '2loc': {
             1: 0, 2: 90, 3: 0, 4: 90, 5: 90, 6: 0
