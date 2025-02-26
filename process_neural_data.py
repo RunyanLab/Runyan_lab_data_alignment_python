@@ -26,6 +26,8 @@ from oasis.oasis_methods import oasisAR1, oasisAR2
 import hdf5storage
 from neo.io import AxonIO
 import platform
+from concurrent.futures import ProcessPoolExecutor
+from matplotlib import cm
 
 class deconvolution:
     """
@@ -93,7 +95,7 @@ class deconvolution:
             print("Failed to load due to memory error. Consider loading fewer variables or using a machine with more RAM.")
             return None
 
-    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM):
+    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM,info):
         """
         Calculate DFF (Delta F/F) and Z-scored DFF from neural imaging data.
         
@@ -111,32 +113,21 @@ class deconvolution:
                 - dff (ndarray): Delta F/F values
                 - z_dff (ndarray): Z-scored Delta F/F values
         """
-        if AB_or_JM == 'AB': 
-            directory = Path(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0")
-            print(directory)
-            os.chdir(directory)
-            F = np.load(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0/F.npy")
-            Fneu = np.load(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
-            iscell = np.load(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
-        elif AB_or_JM == 'JM':
-           
-            if platform.system() == 'Windows':
-                directory = Path(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0")
-                F = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/F.npy")
-                Fneu = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
-                iscell = np.load(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
-            else:
-                directory = Path(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0")
-                F = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/F.npy")
-                Fneu = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fneu.npy")
-                iscell = np.load(f"/Volumes/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/iscell.npy")
-            print(directory)
-            os.chdir(directory)
 
         
-        if AB_or_JM == 'JM':
-            Fall = scipy.io.loadmat(f"//runyan-fs-02.bns.pitt.edu/{server}/Jordyn/ProcessedData/{mouseID}/{date}/suite2p/plane0/Fall.mat")
-            iscell = Fall['iscell']
+        directory = Path(f"{info['server']}/{info['experimenter_name']}/ProcessedData/{mouseID}/{date}/suite2p/plane0")
+        F = np.load(os.path.join(directory,"F.npy"))
+        Fneu =  np.load(os.path.join(directory,"Fneu.npy"))
+        iscell = np.load(os.path.join(directory,"iscell.npy"))
+    
+        print(directory)
+        os.chdir(directory)
+
+        # being reset for data incase there is more than one type of cell selection
+        # e.g. if red cell selection was done last, iscell.npy will only have the red cells marked as cells 
+        # Fall.mat should have all of the cells correctly marked 
+        Fall = scipy.io.loadmat(os.path.join(directory,"Fall.mat"))
+        iscell = Fall['iscell']
 
         print("loaded Fall")    
         numROI = F.shape[0]
@@ -353,10 +344,10 @@ class alignment:
         """
 
         # clear the plots
-        plt.figure(21)
+        plt.figure(21,figsize=[15,6])
         plt.clf()
         
-        plt.figure(22)
+        plt.figure(22,figsize=[15,6])
         plt.clf()
 
         # Get list of sync files
@@ -369,7 +360,7 @@ class alignment:
             sync_file_path = os.path.join(base, file)
 
             # Load sync data
-            sync_data = self.load_sync_data([],sync_file_path)
+            sync_data, sampling_rate = self.load_sync_data(sync_file_path)
 
             # Process temp signal
             iteration_signal = sync_data[:,virmen_channel]
@@ -378,7 +369,7 @@ class alignment:
             # Find peaks with adjusted parameters
             peaks = find_peaks(np.abs(iteration_signal), 
                                             height=0.09,
-                                            distance=5)[0]
+                                            distance=15)[0]
 
             if len(peaks) == 0:
                 print(f"No peaks found in file {file}")
@@ -423,7 +414,7 @@ class alignment:
                     next_value = actual_it_values[it]
 
             # use the positive peak to asign absolute iteration indexes for the rest of the peaks in the pclamp data   
-            previous_value = actual_it_values[marked_its[0]] - 1
+            previous_value = actual_it_values[marked_its[0]]
             for it in range(marked_its[0] + 1, len(it_values)):
                 actual_it_values[it] = previous_value + 1
                 previous_value = actual_it_values[it]
@@ -441,23 +432,71 @@ class alignment:
             acquisitions.append(acquisition)
 
             # Optional plotting
-            plt.figure(21)
+            plt.figure(21,figsize=[15,6])
             plt.subplot(4,4,file_ind+1)
 
             # make subplots, organize by the number of acquisitions 
-            
-            plt.plot(iteration_signal)
-            plt.plot(it_times[marked_its], np.zeros_like(marked_its), 'c*')
+            plt.xlabel('Time (kHz)')
+            plt.ylabel('Iterations')
+            plt.title('Aquisition - ' + str(file_ind))
+            ax = plt.gca()
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            plt.plot(iteration_signal,color='gray')
+            # plt.plot(it_times[marked_its], np.zeros_like(marked_its), color='red')
+            y_vals = sync_data[it_times[marked_its],virmen_channel]
+            plt.scatter(it_times[marked_its], y_vals, color='red')
+
             plt.tight_layout()
         
-        plt.figure(21)
+        plt.figure(21,figsize=[15,6])
+        plt.suptitle('Virmen Iteration Positive Peaks',fontweight='bold')
+        plt.tight_layout()
         plt.show()
         # Final plot
         plt.figure(22)
-        plt.title('virmen iteration values across files')
-        for acq in acquisitions:
-            plt.plot(acq['it_times'], acq['actual_it_values'])
+        plt.title('Virmen Iteration Values Across Files',fontweight='bold')
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.xlabel('Iteration times (pclamp time)')
+        plt.ylabel('Iteration values (virmen data values)')
+        plt.tight_layout()
+
+        jet_cmap = cm.get_cmap('jet',len(sync_files)*3)
+        jet_colors = jet_cmap(np.linspace(0,1,len(sync_files)*3))
+        for ind, acq in enumerate(acquisitions):
+            plt.plot(acq['it_times'], acq['actual_it_values'],color=jet_colors[ind,:])
         plt.show()
+
+        marked_list = []
+        for acq in acquisitions:
+            marked_list.append(acq['positive_peaks_values'])
+        flattened_array = np.concatenate(marked_list)
+
+        if not any(np.diff(flattened_array) == 10000):
+            print('ERROR : Missing or additional virmen iterations. Cannot align VIRMEN data with imaging data')
+            raise ValueError("VIRMEN Iterations NOT aligned")
+        else:
+            print('Positive peaks in VIRMEN are separated by 10k iterations. VIRMEN data successfully aligned')
+
+        plt.figure()
+        plt.title('Positive Peak Values',fontweight='bold')
+        x = np.arange(1,len(flattened_array)+1)
+        plt.bar(x,flattened_array,color='black')
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.xlabel('Positive Peak Number')
+        plt.ylabel('Iteration Value')
+
+        for ii, value in enumerate(flattened_array):
+            plt.text(ii,value + .10, f'{value//1000}k',ha='center',va='bottom')
+
+        plt.tight_layout()
+        plt.show()
+
+
 
         return acquisitions   # Replace None with updated_trial_its if needed
 
@@ -557,6 +596,97 @@ class alignment:
 
         return alignment_info
 
+    def get_frame_times_parallel(self, imaging_base_path, sync_base_path, channel_number, plot_on):
+        """
+        Extract frame timing information from synchronization files for imaging data.
+        
+        Args:
+            self: Instance of alignment class
+            imaging_base_path (str): Path to the imaging data directory
+            sync_base_path (str): Path to the synchronization files directory
+            channel_number (int): Channel number for sync signal
+            plot_on (bool): Whether to display diagnostic plots
+            
+        Returns:
+            list: List of dictionaries containing alignment information for each acquisition:
+                - imaging_id (str): TSeries folder name
+                - sync_id (str): Sync file name
+                - sync_sampling_rate (float): Sampling rate of sync signal
+                - frame_times (ndarray): Array of frame timestamps
+                
+        Raises:
+            ValueError: If number of TSeries folders doesn't match number of sync files
+            
+        Notes:
+            Supports both .abf and .h5 sync file formats
+            Detects frames using peak detection on galvo signals
+            Optionally displays diagnostic plots of signal and frame detection
+        """
+        alignment_info = []
+
+        # Determine if the sync files are in .abf or .h5 format
+        sync_files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf') or f.endswith('.h5')]
+        num_syncs = len(sync_files)
+        is_pclamp = any(f.endswith('.abf') for f in sync_files)
+
+        # Ensure number of TSeries matches the number of syncs
+        tseries_folders = [f for f in os.listdir(imaging_base_path) if 'TSeries' in f]
+        num_tseries = len(tseries_folders)
+        if num_syncs != num_tseries:
+            raise ValueError("Number of TSeries does not match Number of Syncs")
+
+        # Get the number of TIF files per TSeries folder
+        num_tifs = [len([f for f in os.listdir(os.path.join(imaging_base_path, folder)) if 'Ch2' in f]) for folder in tseries_folders]
+
+        with ProcessPoolExecutor() as executor:
+            results = executor.map(self.process_aquisition,range(num_syncs),
+                                   [tseries_folders]*num_syncs,
+                                   [sync_files] * num_syncs,
+                                   [sync_base_path] * num_syncs,
+                                   [is_pclamp]*num_syncs,
+                                   [channel_number] * num_syncs,
+                                   [num_tifs] * num_syncs,
+                                   [plot_on] * num_syncs)
+        
+        alignment_info = list(results)
+        if plot_on:
+            plt.figure(figsize=(15, 6))
+            num_plots = int(np.round(np.sqrt(len(alignment_info))))
+
+            for ind , acq in enumerate(alignment_info):
+                plt.subplot(num_plots,num_plots,ind+1)
+                plt.plot(acq['sync_data'], label="Galvo Signal", color='mediumseagreen')
+                plt.scatter(acq['frame_times'], acq['sync_data'][acq['frame_times']], color='red', label="Frame Times")
+                ax = plt.gca()
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                plt.title('Acquisition - ' + str(ind))
+                plt.ylabel('Voltage')
+                plt.xlabel('Time 10kHz')
+                plt.tight_layout()
+            plt.suptitle("Galvo Signal and Defined Frame Times",fontweight='bold')
+
+
+            plt.tight_layout()
+            plt.show()
+
+
+            plt.figure(figsize=(15, 6))
+            for ind, acq in enumerate(alignment_info):
+                plt.subplot(num_plots,num_plots,ind+1)
+                plt.title('Acquisition - ' + str(ind))
+                plt.hist(np.diff(acq['frame_times']),color='mediumseagreen')
+                plt.xlabel('Time between frames')
+                ax = plt.gca()
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+            plt.suptitle("Unique Frame Intervals",fontweight='bold')
+            plt.tight_layout()
+            plt.show()
+
+
+        return alignment_info
+        
     def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell):
         """
         Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
@@ -726,7 +856,10 @@ class alignment:
     def sound_alignment_imaging(self, imaging, alignment_info, sync_base_path,speaker_1,speaker_2):
         # NEED TO ADD SECOND SPEAKER ALIGNMENT IF SPEAKER OUTPUT IS RECORDED
         files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf')]
-        sync_data = self.load_sync_data(os.path.join(sync_base_path,files[0]))
+        file_num = 0
+        sync_data,sampling_rate = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
+        frame_times = np.asarray(alignment_info[file_num]['frame_times'])
+ 
 
         for trial in imaging:
             current = imaging[trial]
@@ -736,14 +869,14 @@ class alignment:
                 # checking to see if we're still in the same file, update if not
                 if not file_num == current['file_num']:
                     file_num = current['file_num']
-                    sync_data = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
+                    sync_data,sampling_rate = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
                     frame_times = alignment_info[file_num]['frame_times']
 
                 # if given the channel numbers of the speakers, add sound traces to imaging structure
-                if len(speaker_1)>0:
+                if speaker_1 is not None:
                     sound_trace = sync_data[frame_times,speaker_1]
                     imaging[trial]['speaker_1'] = sound_trace[current['relative_frames']%10000]
-                if len(speaker_2)>0:
+                if speaker_2 is not None:
                     sound_trace = sync_data[frame_times,speaker_2]
                     imaging[trial]['speaker_2'] = sound_trace[current['relative_frames']%10000]
 
@@ -1028,6 +1161,43 @@ class alignment:
 
         return sync_data,sampling_rate
     
+    def process_aquisition(self,acq_number,tseries_folders,sync_files,sync_base_path,is_pclamp,channel_number,num_tifs,plot_on):
+
+        print(f"Imaging Dir: {tseries_folders[acq_number]}, Sync File: {sync_files[acq_number]}")
+        sync_file_path = os.path.join(sync_base_path, sync_files[acq_number])
+        imaging_folder = tseries_folders[acq_number]
+
+        # Load sync data based on file type
+        if is_pclamp:
+            sync_data, sync_sampling_rate = self.load_sync_data(sync_file_path)
+            sync_data = sync_data[:,channel_number]
+
+        galvo_signal_norm = sync_data / np.max(sync_data)
+        peaks, _ = find_peaks(galvo_signal_norm, height=0.3, prominence=0.1)
+        scanning_amplitude = np.mean(sync_data[peaks])
+        good_peaks = [p for p in peaks if 0.95 * scanning_amplitude < sync_data[p] < 1.1 * scanning_amplitude]
+        frame_times = np.array(good_peaks)
+
+        # Calculate frame rate and intervals
+        frame_intervals_sec = np.diff(frame_times) / sync_sampling_rate
+        imaging_frame_rate = 1 / (np.mean(frame_intervals_sec))
+     
+        # Adjust frame times if necessary based on TIF file count
+        if len(frame_times) > num_tifs[acq_number]:
+            frame_times = frame_times[:num_tifs[acq_number]]
+
+
+        # Optionally plot the galvo signal and frame detection
+        
+        return {
+            "imaging_id": imaging_folder,
+            "sync_id": sync_files[acq_number],
+            "sync_sampling_rate": sync_sampling_rate,
+            "frame_times": frame_times,
+            "sync_data" : sync_data
+        }
+
+
     # UNUSED METHODS, COULD BE HELPFUL FOR DEBUGGING IN THE FUTURE
     # CURRENTLY NOT ACCESSABLE FROM OUTSIDE OF THE CLASS
     def __get_digidata_iterations(self, sync_base_path, string, virmen_channel):
