@@ -95,7 +95,7 @@ class deconvolution:
             print("Failed to load due to memory error. Consider loading fewer variables or using a machine with more RAM.")
             return None
 
-    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM,info):
+    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM,info,**kwargs):
         """
         Calculate DFF (Delta F/F) and Z-scored DFF from neural imaging data.
         
@@ -114,11 +114,22 @@ class deconvolution:
                 - z_dff (ndarray): Z-scored Delta F/F values
         """
 
+       
         
         directory = Path(f"{info['server']}/{info['experimenter_name']}/ProcessedData/{mouseID}/{date}/suite2p/plane0")
-        F = np.load(os.path.join(directory,"F.npy"))
-        Fneu =  np.load(os.path.join(directory,"Fneu.npy"))
-        iscell = np.load(os.path.join(directory,"iscell.npy"))
+
+        key_list = list(kwargs)
+        if 'aligned_stim' in key_list:
+            proc_dir = Path(F"{info['server']}/{info['experimenter_name']}/ProcessedData/{mouseID}/{date}/spikes")
+            data = np.load(os.path.join(proc_dir,"adjusted_F.npy"),allow_pickle=True).item()
+            F_adjusted = dict(data)
+
+            F = F_adjusted['F']
+            Fneu = F_adjusted['Fneu']
+        else: 
+            F = np.load(os.path.join(directory,"F.npy"))
+            Fneu =  np.load(os.path.join(directory,"Fneu.npy"))
+            iscell = np.load(os.path.join(directory,"iscell.npy"))
     
         print(directory)
         os.chdir(directory)
@@ -651,7 +662,7 @@ class alignment:
         alignment_info = list(results)
         if plot_on:
             plt.figure(figsize=(15, 6))
-            num_plots = int(np.round(np.sqrt(len(alignment_info))))
+            num_plots = int(np.round(np.sqrt(len(alignment_info))))+1
 
             for ind , acq in enumerate(alignment_info):
                 plt.subplot(num_plots,num_plots,ind+1)
@@ -769,7 +780,9 @@ class alignment:
                 'virmen_trial_info': {
                     'correct': dataCell[current_trial]['correct'],
                     'left_turn': dataCell[current_trial]['leftTurn'],
-                    'condition': dataCell[current_trial]['condition']
+                    'condition': dataCell[current_trial]['condition'],
+                    'iti_correct' : dataCell[current_trial]['itiCorrect'],
+                    'iti_incorrect' : dataCell[current_trial]['itiMiss']
                 },
                 'dff': np.NaN,
                 'z_dff': np.NaN,
