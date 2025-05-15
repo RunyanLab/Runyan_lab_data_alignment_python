@@ -1,0 +1,48 @@
+name: neural_analysis
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.9
+  
+  # Core scientific packages
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  
+  # Machine learning & image processing
+  - scikit-learn
+  - scikit-image
+  
+  # Performance optimization
+  - numba
+  
+  # Data handling
+  - h5py
+  - hdf5storage
+  
+  # Jupyter support
+  - jupyter
+  - ipykernel
+  
+  # Build tools
+  - pip
+  - setuptools
+  - wheel
+
+  # Additional dependencies for suite2p
+  - pytorch
+  - tifffile
+  - natsort
+  - ruamel.yaml
+
+  # Pip packages
+  - pip:
+    - pyabf
+    - suite2p==0.10.3
+    - neo
+    - oasis-deconv
+    - rastermap
