@@ -7,13 +7,20 @@ Delta F/F is calculated on rawF traces from Suite2p, and the Delta F/F traces ar
 Alignment of the imaging frames and the VIRMEN trials is achieved through sync information recorded by ClampX. 
 
 ## **Installation Instructions**
-
-git clone https://github.com/acbandi213/Runyan_lab_data_alignment_python.git
+#### Make sure to clone the MAIN branch in the RunyanLab Organization
+##### For Windows
+git clone https://github.com/RunyanLab/Runyan_lab_data_alignment_python.git
 
 cd Runyan_lab_data_alignment_python
 
-conda env create -f environment.yml
+conda env create -f windows_environment.yml
 
+##### For Mac
+git clone https://github.com/RunyanLab/Runyan_lab_data_alignment_python.git
+
+cd Runyan_lab_data_alignment_python
+
+conda env create -f mac_environment.yml
 
 ## **Experimental Set up**
 #### VIRMEN Behavioral set up 
