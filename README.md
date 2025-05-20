@@ -28,7 +28,8 @@ conda env create -f mac_environment.yml
 - See VIRMEN Github for more information. 
 
 #### 2-photon imaging
-- This pipeline is built to be used with 2photon calcium imaging. It should be generalizable for varying framerates as well as window sizes. 
+- This pipeline is built to be used with 2photon calcium imaging. It should be generalizable for varying framerates as well as window sizes.
+- It has been extensively tested with 512x512 images acquired with a framerate of 30Hz. 
 
 #### Clampx or Wavesurfer
 - To align imaging frames with VIRMEN data, the y-galvo of the imaging laser and the VIRMEN iterations outputted by VIRMEN need to be recorded at a common sampling rate. 
@@ -51,14 +52,18 @@ conda env create -f mac_environment.yml
 #### Dataset specific values
 - In this section set the appropriate values for each dataset
 - This format works only with specific saving conventions. 
-- Processed data should be stored in \\Server\Experimenter_Name\ProcessedData\Mouse\Date
-- Sync data should be stored in \\Server\Experimenter_Name\ClampX\Mouse\Date or \\Server\Experimenter Name\Mouse\ClampX
+- Processed data should be stored in \\Server\Experimenter_Name\ProcessedData\Mouse\YYYY-MM-DD
+- Sync data should be stored in \\Server\Experimenter_Name\ClampX\Mouse\YYYY-MM-DD or \\Server\Experimenter Name\Mouse\ClampX
 - VIRMEN data should be stored in \\Server\Experimenter_Name\Mouse\VIRMEN
 
 
 #### Df/f and Deconvolution
 - Df/f is calculated with a rolling window on the rawF traces from suite2p. 
-- Deconvolution is computed with the OASIS algorithm. 
+- Deconvolution is computed with the OASIS algorithm.
+- The deconvolution class computes dF/F by subtracting and dividing by the 8th percentile baseline from a window of ~30 seconds (the size parameter) around each frame.
+- It then deconvolves these dF/F signals using the OASIS toolbox with the AR1 FOOPSI algorithm.
+- The code also loads and preprocesses imaging data from suite2p outputs; applies a neuropil correction (subtracting 0.7 * Fneu from F); z-scores the dF/F values
+- The class also contains optimized functions using Numba's JIT compilation for parallel processing of percentile calculations, making it computationally efficient for large datasets.
 
 #### Virmen trial alignment
 - Alignment of VIRMEN trials with imaging frames is achieved by the VIRMEN iterations recorded in ClampX. 
@@ -82,11 +87,33 @@ conda env create -f mac_environment.yml
 - **celi**: The suite2p indexes relative to their index within the dff array. [1 X number of Cells]  
 
 #### Alignment info
-- **Alignment_info**: contains the alignment data such as frame times and sync files used. Optional output to save. Dict of shape [1 x number of acquisitions]
+- **Alignment_info**: contains the alignment data such as frame times and sync files used. Optional output to save. Dict of shape [1 x number of acquisitions
+  - **keys:**
+    -  _imaging_id_ - file name of acquisition
+    -  _sync_id_ - file name of sync acquisition
+    -  _sync_sampling_rate_ (Hz)
+    -  _frame_times_ - time of each frame in pclamp time
+    -  _sync_data_ - imaging y-galvo voltage trace  
 
 #### Aligned Trials
 - **imaging**: trialized dict containing behavior and imaging data (if it exists) for each VIRMEN trial of the session of shape [1 x number of Trials]
-  
+  - **keys for imaging['Trial_n']:**
+    -   start_it - starting VIRMEN iteration for trial n
+    -   end_it - ending VIRMEN iteration for trial n
+    -   iti_start_it - first VIRMEN iteration in the ITI
+    -   iti_end_it - last VIRMEN iteration in the ITI
+    -   virmen_trial_info - trial conditions (left vs right), choice, and reward
+    -   dff - dff matrix for frames of trial n [neurons x frames]
+    -   z_dff - z-scored dff matrix for frames of trial n [neurons x frames]
+    -   deconv - deconv matrix for frames of trial n [neurons x frames]
+    -   relative_frames - frame indexes relative to concatinated matrix of all acquisitions
+    -   file_num - acquisition number that contains trial n
+    -   movement_in_virmen_time - movement and view angle in VIRMEN time (~60Hz)
+    -   frame_id - frame index relative to the frames in the current acquisition. (1-frames in an acquisition)
+    -   movement_in_imaging_time - movement and view angle in imaging time (~30Hz)
+    -   good_trial - 1 for a trial that has frames for the full length of the trial, 0 if part of the trial was not imaged
+    -   speaker_1 - voltage trace for speaker 1 in pclamp time
+
 - **imaged_trials**: List of trials that have imaging data of shape [1 x number of Trials]
 
 #### Behavior 
