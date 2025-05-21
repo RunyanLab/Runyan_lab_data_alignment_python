@@ -98,21 +98,20 @@ conda env create -f mac_environment.yml
 #### Aligned Trials
 - **imaging**: trialized dict containing behavior and imaging data (if it exists) for each VIRMEN trial of the session of shape [1 x number of Trials]
   - **keys for imaging['Trial_n']:**
-    -   start_it - starting VIRMEN iteration for trial n
-    -   end_it - ending VIRMEN iteration for trial n
-    -   iti_start_it - first VIRMEN iteration in the ITI
-    -   iti_end_it - last VIRMEN iteration in the ITI
-    -   virmen_trial_info - trial conditions (left vs right), choice, and reward
-    -   dff - dff matrix for frames of trial n [neurons x frames]
-    -   z_dff - z-scored dff matrix for frames of trial n [neurons x frames]
-    -   deconv - deconv matrix for frames of trial n [neurons x frames]
-    -   relative_frames - frame indexes relative to concatinated matrix of all acquisitions
-    -   file_num - acquisition number that contains trial n
-    -   movement_in_virmen_time - movement and view angle in VIRMEN time (~60Hz)
-    -   frame_id - frame index relative to the frames in the current acquisition. (1-frames in an acquisition)
-    -   movement_in_imaging_time - movement and view angle in imaging time (~30Hz)
-    -   good_trial - 1 for a trial that has frames for the full length of the trial, 0 if part of the trial was not imaged
-    -   speaker_1 - voltage trace for speaker 1 in pclamp time
+    -   _start_it_ - starting VIRMEN iteration for trial n
+    -   _end_it_ - ending VIRMEN iteration for trial n
+    -   _iti_start_it_ - first VIRMEN iteration in the ITI
+    -   _iti_end_it_ - last VIRMEN iteration in the ITI
+    -   _virmen_trial_info_ - trial conditions (left vs right), choice, and reward
+    -   _dff_ - dff matrix for frames of trial n [neurons x frames]
+    -   _z_dff_ - z-scored dff matrix for frames of trial n [neurons x frames]
+    -   _deconv_ - deconv matrix for frames of trial n [neurons x frames]
+    -   _relative_frames_ - frame indexes relative to concatinated matrix of all acquisitions
+    -   _file_num_ - acquisition number that contains trial n
+    -   _movement_in_virmen_time_ - movement and view angle in VIRMEN time (~60Hz)
+    -   _frame_id_ - frame index relative to the frames in the current acquisition. (1-frames in an acquisition)
+    -   _movement_in_imaging_time_ - movement and view angle in imaging time (~30Hz)
+    -   _good_trial_ - 1 for a trial that has frames for the full length of the trial, 0 if part of the trial was not imaged
 
 - **imaged_trials**: List of trials that have imaging data of shape [1 x number of Trials]
 
