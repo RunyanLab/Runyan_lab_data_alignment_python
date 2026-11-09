@@ -95,7 +95,7 @@ class deconvolution:
             print("Failed to load due to memory error. Consider loading fewer variables or using a machine with more RAM.")
             return None
 
-    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM,info,**kwargs):
+    def pydff(self, mouseID, date, server, size, F_file, variables_to_load, AB_or_JM,info):
         """
         Calculate DFF (Delta F/F) and Z-scored DFF from neural imaging data.
         
@@ -114,22 +114,11 @@ class deconvolution:
                 - z_dff (ndarray): Z-scored Delta F/F values
         """
 
-       
         
         directory = Path(f"{info['server']}/{info['experimenter_name']}/ProcessedData/{mouseID}/{date}/suite2p/plane0")
-
-        key_list = list(kwargs)
-        if 'aligned_stim' in key_list:
-            proc_dir = Path(F"{info['server']}/{info['experimenter_name']}/ProcessedData/{mouseID}/{date}/spikes")
-            data = np.load(os.path.join(proc_dir,"adjusted_F.npy"),allow_pickle=True).item()
-            F_adjusted = dict(data)
-
-            F = F_adjusted['F']
-            Fneu = F_adjusted['Fneu']
-        else: 
-            F = np.load(os.path.join(directory,"F.npy"))
-            Fneu =  np.load(os.path.join(directory,"Fneu.npy"))
-            iscell = np.load(os.path.join(directory,"iscell.npy"))
+        F = np.load(os.path.join(directory,"F.npy"))
+        Fneu =  np.load(os.path.join(directory,"Fneu.npy"))
+        iscell = np.load(os.path.join(directory,"iscell.npy"))
     
         print(directory)
         os.chdir(directory)
@@ -137,8 +126,8 @@ class deconvolution:
         # being reset for data incase there is more than one type of cell selection
         # e.g. if red cell selection was done last, iscell.npy will only have the red cells marked as cells 
         # Fall.mat should have all of the cells correctly marked 
-        Fall = scipy.io.loadmat(os.path.join(directory,"Fall.mat"))
-        iscell = Fall['iscell']
+        #Fall = scipy.io.loadmat(os.path.join(directory,"Fall.mat"))
+        #iscell = Fall['iscell']
 
         print("loaded Fall")    
         numROI = F.shape[0]
@@ -160,7 +149,8 @@ class deconvolution:
         z_dff = scipy.stats.zscore(dff, axis=1)
 
         if AB_or_JM == 'AB':
-            directory = Path(f"/Volumes/{server}/Akhil/ProcessedData/{mouseID}/{date}")
+            # use the save path from info so this works for any server / experimenter
+            directory = Path(info['save_path'])
         else:
             directory = Path(f"/Volumes/{server}/Jordyn/Processed Data/{mouseID}/{date}")
         directory.mkdir(parents=True, exist_ok=True)
@@ -363,6 +353,7 @@ class alignment:
 
         # Get list of sync files
         sync_files = [f for f in os.listdir(base) if f.endswith('.abf')]
+        sync_files = sorted(sync_files)  # Sort the files in ascending order
 
         # Initalize the acquisition structure 
         acquisitions = []
@@ -459,7 +450,7 @@ class alignment:
             plt.scatter(it_times[marked_its], y_vals, color='red')
 
             plt.tight_layout()
-        
+
         plt.figure(21,figsize=[15,6])
         plt.suptitle('Virmen Iteration Positive Peaks',fontweight='bold')
         plt.tight_layout()
@@ -507,7 +498,7 @@ class alignment:
         plt.tight_layout()
         plt.show()
 
-
+        #acquisitions.sort(key=lambda x: int(x['directory'].split('_')[-1].split('.')[0]))
 
         return acquisitions   # Replace None with updated_trial_its if needed
 
@@ -541,6 +532,8 @@ class alignment:
 
         # Determine if the sync files are in .abf or .h5 format
         sync_files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf') or f.endswith('.h5')]
+        sync_files = sorted(sync_files)  # Sort the files in ascending order
+
         num_syncs = len(sync_files)
         is_pclamp = any(f.endswith('.abf') for f in sync_files)
 
@@ -637,11 +630,15 @@ class alignment:
 
         # Determine if the sync files are in .abf or .h5 format
         sync_files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf') or f.endswith('.h5')]
+        sync_files = sorted(sync_files)  # Sort the files in ascending order
+
         num_syncs = len(sync_files)
+
         is_pclamp = any(f.endswith('.abf') for f in sync_files)
 
         # Ensure number of TSeries matches the number of syncs
-        tseries_folders = [f for f in os.listdir(imaging_base_path) if 'TSeries' in f]
+        # sorted so TSeries folders pair with the (sorted) sync files by index
+        tseries_folders = sorted(f for f in os.listdir(imaging_base_path) if 'TSeries' in f)
         num_tseries = len(tseries_folders)
         if num_syncs != num_tseries:
             raise ValueError("Number of TSeries does not match Number of Syncs")
@@ -660,12 +657,14 @@ class alignment:
                                    [plot_on] * num_syncs)
         
         alignment_info = list(results)
+        #alignment_info = alignment_info.sort(key=lambda x: int(x['sync_id'].split('_')[-1].split('.')[0]))
+
         if plot_on:
             plt.figure(figsize=(15, 6))
-            num_plots = int(np.round(np.sqrt(len(alignment_info))))+1
+            num_plots = int(np.round(np.sqrt(len(alignment_info))))
 
             for ind , acq in enumerate(alignment_info):
-                plt.subplot(num_plots,num_plots,ind+1)
+                #plt.subplot(num_plots,num_plots,ind+1)
                 plt.plot(acq['sync_data'], label="Galvo Signal", color='mediumseagreen')
                 plt.scatter(acq['frame_times'], acq['sync_data'][acq['frame_times']], color='red', label="Frame Times")
                 ax = plt.gca()
@@ -684,7 +683,7 @@ class alignment:
 
             plt.figure(figsize=(15, 6))
             for ind, acq in enumerate(alignment_info):
-                plt.subplot(num_plots,num_plots,ind+1)
+                #plt.subplot(num_plots,num_plots,ind+1)
                 plt.title('Acquisition - ' + str(ind))
                 plt.hist(np.diff(acq['frame_times']),color='mediumseagreen')
                 plt.xlabel('Time between frames')
@@ -695,10 +694,9 @@ class alignment:
             plt.tight_layout()
             plt.show()
 
-
         return alignment_info
         
-    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell):
+    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell, task):
         """
         Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
         
@@ -780,9 +778,7 @@ class alignment:
                 'virmen_trial_info': {
                     'correct': dataCell[current_trial]['correct'],
                     'left_turn': dataCell[current_trial]['leftTurn'],
-                    'condition': dataCell[current_trial]['condition'],
-                    'iti_correct' : dataCell[current_trial]['itiCorrect'],
-                    'iti_incorrect' : dataCell[current_trial]['itiMiss']
+                    'condition': dataCell[current_trial]['condition']
                 },
                 'dff': np.NaN,
                 'z_dff': np.NaN,
@@ -816,7 +812,10 @@ class alignment:
                     
                     # Get movement data from the virmen data matrix 
                     # movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
-                    movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
+                    if task == 'MIT':
+                        movement_data = self.get_movement_data_MIT(virmen_data, start_it, iti_end_it)
+                    else:
+                        movement_data = self.get_movement_data(virmen_data, start_it, iti_end_it)
 
                     imaging[current_trial]['movement_in_virmen_time'] = movement_data
                     
@@ -839,13 +838,16 @@ class alignment:
                         'dff': dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
                         'z_dff': z_dff[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
                         'deconv': deconv[:, maze_start_frame + previous_frames_sum:iti_end_frame + previous_frames_sum],
-                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1), ## ISSUE HERE?? WHY PLUS 1??
+                        'relative_frames': np.arange(maze_start_frame + previous_frames_sum, iti_end_frame + previous_frames_sum + 1), 
                         'file_num': file_ind
                     })
                     
                     # Add movement in imaging time
                     # movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
-                    movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
+                    if task == 'MIT':
+                        movement_imaging = self.align_movement_to_imaging_MIT(movement_data, frame_ids, imaging[current_trial])
+                    else:
+                        movement_imaging = self.align_movement_to_imaging(movement_data, frame_ids, imaging[current_trial])
 
                     imaging[current_trial]['movement_in_imaging_time'] = movement_imaging
                     
@@ -1050,6 +1052,40 @@ class alignment:
             'in_ITI': data[8, start_it:iti_end_it + 1]
         }
 
+    def get_movement_data_MIT(self, data, start_it, iti_end_it):
+        """
+        Extract movement-related data for a specific trial period.
+        
+        Args:
+            self: Instance of alignment class
+            data (numpy.ndarray): Raw VirMEn data array containing movement information
+            start_it (int): Starting iteration index
+            iti_end_it (int): Ending iteration index (including ITI)
+            
+        Returns:
+            dict: Dictionary containing movement data with keys:
+                - y_position: Y-coordinate positions
+                - x_position: X-coordinate positions
+                - view_angle: Viewing angles
+                - x_velocity: Velocity along X-axis
+                - y_velocity: Velocity along Y-axis
+                - cw: Clockwise rotation values
+                - is_reward: Reward state indicators
+                - in_ITI: Inter-trial interval indicators
+        """
+        return {
+            'x_position': data[1, start_it:iti_end_it + 1],
+            'y_position': data[2, start_it:iti_end_it + 1],
+            'view_angle': data[3, start_it:iti_end_it + 1],
+            'mvData_1': data[4, start_it:iti_end_it + 1],
+            'mvData_2': data[5, start_it:iti_end_it + 1],
+            'mvData_3': data[6, start_it:iti_end_it + 1],
+            'cuePos': data[7, start_it:iti_end_it + 1],
+            'is_reward': data[8, start_it:iti_end_it + 1],
+            'in_ITI': data[9, start_it:iti_end_it + 1],
+            'ball_center': data[10, start_it:iti_end_it + 1],
+        }
+
     def get_frame_ids(self, output_data, start_it, end_it):
         """
         Get imaging frame IDs corresponding to VirMEn iterations.
@@ -1137,6 +1173,65 @@ class alignment:
             'is_reward': np.zeros(num_frames),
             'in_ITI': np.zeros(num_frames),
             'pure_tones': np.zeros(num_frames)
+        }
+        
+        # Fill in movement data
+        # transforms movement data into imaging time from virmen 'data' time
+        # the behavior values from the first iteration in the bound of a frame 
+        # are assigned to that frame. If no iteration corresponds to a frame, 
+        # nans are assigned. 
+        for frame in range(num_frames):
+            idx = np.where(frame_ids - frame_ids[0] + 1 == frame + 1)[0]
+            if len(idx) > 0:
+                idx = idx[0]
+                for key in movement_data.keys():
+                    if key in movement_imaging:
+                        movement_imaging[key][frame] = movement_data[key][idx]
+            else:
+                for key in movement_imaging.keys():
+                    movement_imaging[key][frame] = np.nan
+        
+        return movement_imaging
+
+    
+    def align_movement_to_imaging_MIT(self, movement_data, frame_ids, trial_dict):
+        """
+        Align movement data to imaging frame timestamps.
+        
+        Args:
+            self: Instance of alignment class
+            movement_data (dict): Dictionary containing movement data in VirMEn time
+            frame_ids (numpy.ndarray): Array of frame IDs for alignment
+            trial_dict (dict): Dictionary containing trial information including DFF data
+            
+        Returns:
+            dict: Dictionary containing movement data aligned to imaging frames with keys:
+                - y_position: Y-coordinate positions
+                - x_position: X-coordinate positions
+                - y_velocity: Velocity along Y-axis
+                - x_velocity: Velocity along X-axis
+                - view_angle: Viewing angles
+                - is_reward: Reward state indicators
+                - in_ITI: Inter-trial interval indicators
+                - pure_tones: Pure tone indicators
+                
+        Notes:
+            - Creates zero-filled arrays for each movement variable
+            - Maps movement data to corresponding imaging frames
+            - Uses NaN for frames without corresponding movement data
+        """
+        num_frames = len(trial_dict['dff'][0])
+        movement_imaging = {
+            'x_position': np.zeros(num_frames),
+            'y_position': np.zeros(num_frames),
+            'view_angle': np.zeros(num_frames),
+            'mvData_1': np.zeros(num_frames),
+            'mvData_2': np.zeros(num_frames),
+            'mvData_3': np.zeros(num_frames),
+            'cuePos': np.zeros(num_frames),
+            'is_reward': np.zeros(num_frames),
+            'in_ITI': np.zeros(num_frames),
+            'ball_center': np.zeros(num_frames),
         }
         
         # Fill in movement data
