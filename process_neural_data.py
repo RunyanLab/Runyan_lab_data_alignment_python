@@ -554,7 +554,8 @@ class alignment:
                              f"number of TSeries folders ({num_tseries}). Found {num_syncs} sync file(s).")
 
         # Get the number of TIF files per TSeries folder
-        num_tifs = [len([f for f in os.listdir(os.path.join(imaging_base_path, folder)) if 'Ch2' in f]) for folder in tseries_folders]
+        # Frames per TSeries (from the Bruker XML; multi-page OME-TIFs hold many frames per file)
+        num_tifs = [self.count_tseries_frames(os.path.join(imaging_base_path, folder)) for folder in tseries_folders]
 
         tseries_idx = 0
         for file_index, num_sweeps in enumerate(sweeps_per_file):
@@ -633,7 +634,8 @@ class alignment:
                              f"number of TSeries folders ({num_tseries}). Found {num_syncs} sync file(s).")
 
         # Get the number of TIF files per TSeries folder
-        num_tifs = [len([f for f in os.listdir(os.path.join(imaging_base_path, folder)) if 'Ch2' in f]) for folder in tseries_folders]
+        # Frames per TSeries (from the Bruker XML; multi-page OME-TIFs hold many frames per file)
+        num_tifs = [self.count_tseries_frames(os.path.join(imaging_base_path, folder)) for folder in tseries_folders]
 
         # Split the TSeries folders (and their TIF counts) by sync file, one per sweep
         tseries_per_file = []
@@ -693,7 +695,23 @@ class alignment:
 
         return alignment_info
         
-    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell, task):
+    def check_frame_counts(self, alignment_info, dff):
+        """
+        Raise if the frame times detected from the sync files don't match the number of
+        frames in the activity traces (suite2p). A mismatch means frames will be assigned
+        to the wrong trials, or that no trials will align at all.
+        """
+        per_file = [len(a['frame_times']) for a in alignment_info]
+        n_sync, n_traces = sum(per_file), dff.shape[1]
+        if n_sync != n_traces:
+            raise ValueError(
+                f"Frame count mismatch: {n_sync} frame times from the sync files "
+                f"({per_file} per file) but the activity traces have {n_traces} frames. "
+                f"Common causes: imaging frames miscounted (see count_tseries_frames), "
+                f"wrong galvo_channel, or a TSeries missing from suite2p. "
+                f"Pass check_frames=False to align_virmen_data to skip this check.")
+
+    def align_virmen_data(self, dff, deconv, virmen_aq, alignment_info, data, dataCell, task, check_frames=True):
         """
         Align VirMEn behavioral data with imaging data and organize into trial-by-trial format.
         
@@ -705,6 +723,8 @@ class alignment:
             alignment_info (list): List of dictionaries with frame timing information
             data (dict): Raw VirMEn data dictionary
             dataCell (dict): Processed VirMEn data organized by trials
+            task (str): 'MIT' for the MIT_Pilot virmen layout, None for the standard layout
+            check_frames (bool): Raise if sync frame times don't match the frames in dff (default True)
         
         Returns:
             dict: Dictionary where each key is 'trial_X' containing:
@@ -723,6 +743,9 @@ class alignment:
                 - movement_in_imaging_time: Movement data aligned to imaging frames
                 - good_trial: Flag indicating valid trial (1) or not (0)
         """
+        if check_frames:
+            self.check_frame_counts(alignment_info, dff)
+
         # Z-score dff (assumes neurons x time)
         z_dff = scipy.stats.zscore(dff, axis=1)
         
@@ -1288,6 +1311,23 @@ class alignment:
 
         return sync_data,sampling_rate
 
+    def count_tseries_frames(self, tseries_path, channel='Ch2'):
+        """
+        Count imaging frames in a Bruker TSeries folder.
+
+        Uses the TSeries .xml (one <Frame> element per frame), which is correct for both
+        single-page TIFs (one file per frame) and multi-page OME-TIFs (many frames per file).
+        Falls back to counting channel TIF files if no XML is present.
+        """
+        folder = os.path.basename(os.path.normpath(tseries_path))
+        xml_path = os.path.join(tseries_path, folder + '.xml')
+        if os.path.isfile(xml_path):
+            with open(xml_path, 'r', errors='ignore') as f:
+                n = sum(line.count('<Frame ') for line in f)
+            if n > 0:
+                return n
+        return len([f for f in os.listdir(tseries_path) if channel in f and f.endswith('.tif')])
+
     def get_abf_sweep_count(self, abf_file_path):
         """
         Get the number of sweeps in an ABF file.
@@ -1346,12 +1386,19 @@ class alignment:
             good_peaks = [p for p in peaks if 0.95 * scanning_amplitude < sweep_channel_data[p] < 1.1 * scanning_amplitude]
             sweep_frame_times = np.array(good_peaks)
 
-            # Adjust frame times if necessary based on this sweep's TIF file count
-            if len(sweep_frame_times) > num_tifs_for_file[sweep_num]:
-                sweep_frame_times = sweep_frame_times[:num_tifs_for_file[sweep_num]]
+            # Adjust frame times to this sweep's imaging frame count (from the TSeries XML)
+            expected_frames = num_tifs_for_file[sweep_num]
+            if len(sweep_frame_times) > expected_frames:
+                print(f"    Sweep {sweep_num + 1}/{num_sweeps}: trimmed {len(sweep_frame_times) - expected_frames} "
+                      f"extra galvo peaks to match {expected_frames} imaging frames")
+                sweep_frame_times = sweep_frame_times[:expected_frames]
+            elif len(sweep_frame_times) < expected_frames:
+                warnings.warn(f"{sync_file} sweep {sweep_num + 1}: detected only {len(sweep_frame_times)} galvo frames "
+                              f"but {tseries_folders_for_file[sweep_num]} has {expected_frames} imaging frames. "
+                              f"Check galvo_channel and the find_peaks thresholds.")
 
             print(f"    Sweep {sweep_num + 1}/{num_sweeps} ({tseries_folders_for_file[sweep_num]}): "
-                  f"{len(sweep_frame_times)} frames, {num_tifs_for_file[sweep_num]} TIFs, offset={cumulative_offset}")
+                  f"{len(sweep_frame_times)} frames, {num_tifs_for_file[sweep_num]} imaging frames, offset={cumulative_offset}")
 
             # Add offset to frame times (to account for previous sweeps)
             all_frame_times_list.append(sweep_frame_times + cumulative_offset)

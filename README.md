@@ -71,6 +71,16 @@ conda env create -f mac_environment.yml
 - Every 10k iterations a positive peak of height equivalent to 10k * pos peak number. 
 - The absolute index of each iteration is then calculated by referencing their distance from the two surrounding positive peaks. 
 
+- Imaging frame times come from peaks in the y-galvo signal. Each TSeries' frame count is read from its Bruker `.xml` (one `<Frame>` per frame), so both single-page TIFs (one file per frame) and multi-page OME-TIFs (many frames per file) are handled.
+- `align_virmen_data` checks that the total number of frame times matches the number of frames in the suite2p traces and raises an error if they differ (`check_frames=False` skips the check).
+
+#### Troubleshooting: few or no trials aligned
+- **Frame count mismatch error / `0 / N trials aligned`**: compare the per-sweep `frames` printed by `get_frame_times_parallel` with the frame counts in each TSeries `.xml` and with suite2p's `ops['nframes']`. These three should agree.
+  - Very small frame counts (e.g. 5 per sweep) mean frames were counted from TIF files instead of the XML. Multi-page OME-TIFs hold ~1000 frames per file.
+  - A warning that fewer galvo frames were detected than imaging frames usually means the wrong `galvo_channel` or a noisy galvo signal.
+- **Blocks of consecutive trials not aligned**: expected when ClampX keeps recording after imaging stops (or VIRMEN starts before the first recording). Those trials have no imaging and get `good_trial = 0`. Compare each ABF's duration with frames / frame rate to confirm.
+- **`Read-only file system: '//runyan-fs-01...'` on Mac**: the UNC path only works on Windows. On Mac connect to `smb://runyan-fs-01.bns.pitt.edu/<share>` and use `/Volumes/<share>`.
+
 #### Optional behavior only alignment with clampx
 - Option to align VIRMEN trials without imaging frames.
 - This can be helpful when troubleshooting alignment issues or to check and see if a dataset will align before image processing has finished. 
