@@ -361,11 +361,16 @@ class alignment:
         for file_ind, file in enumerate(sync_files):
             sync_file_path = os.path.join(base, file)
 
-            # Load sync data
-            sync_data, sampling_rate = self.load_sync_data(sync_file_path)
+            # Load and concatenate all sweeps for this file (to match frame_times concatenation)
+            num_sweeps = self.get_abf_sweep_count(sync_file_path)
+            all_sweep_signals = []
+            for sweep_num in range(num_sweeps):
+                sweep_data, sampling_rate = self.load_sync_data(sync_file_path, sweep_number=sweep_num)
+                all_sweep_signals.append(sweep_data[:, virmen_channel])
+            concatenated_signal = np.concatenate(all_sweep_signals)
 
             # Process temp signal
-            iteration_signal = sync_data[:,virmen_channel]
+            iteration_signal = concatenated_signal
             iteration_signal = iteration_signal - np.median(iteration_signal)
 
             # Find peaks with adjusted parameters
@@ -385,7 +390,7 @@ class alignment:
             # peaks = peaks + 1
 
             # Iteration values are the peaks, the times are the indexes
-            # it_times is indexed relative to pclamp timing
+            # it_times is indexed relative to pclamp timing (concatenated)
             it_values = iteration_signal[peaks]
             it_times = peaks
 
@@ -446,7 +451,7 @@ class alignment:
             ax.spines['right'].set_visible(False)
             plt.plot(iteration_signal,color='gray')
             # plt.plot(it_times[marked_its], np.zeros_like(marked_its), color='red')
-            y_vals = sync_data[it_times[marked_its],virmen_channel]
+            y_vals = concatenated_signal[it_times[marked_its]]
             plt.scatter(it_times[marked_its], y_vals, color='red')
 
             plt.tight_layout()
@@ -505,6 +510,8 @@ class alignment:
     def get_frame_times(self, imaging_base_path, sync_base_path, channel_number, plot_on):
         """
         Extract frame timing information from synchronization files for imaging data.
+        Each sweep of a sync file corresponds to one TSeries folder; all sweeps of a file
+        are concatenated into one continuous sequence.
         
         Args:
             self: Instance of alignment class
@@ -514,17 +521,17 @@ class alignment:
             plot_on (bool): Whether to display diagnostic plots
             
         Returns:
-            list: List of dictionaries containing alignment information for each acquisition:
-                - imaging_id (str): TSeries folder name
+            list: List of dictionaries containing alignment information for each sync file:
+                - imaging_id (str): TSeries folder name (first TSeries for this file)
                 - sync_id (str): Sync file name
                 - sync_sampling_rate (float): Sampling rate of sync signal
-                - frame_times (ndarray): Array of frame timestamps
+                - frame_times (ndarray): Array of frame timestamps (concatenated from all sweeps)
                 
         Raises:
-            ValueError: If number of TSeries folders doesn't match number of sync files
+            ValueError: If the total number of sweeps across sync files doesn't match the number of TSeries folders
             
         Notes:
-            Supports both .abf and .h5 sync file formats
+            Supports both .abf and .h5 sync file formats (.h5 files are treated as a single sweep)
             Detects frames using peak detection on galvo signals
             Optionally displays diagnostic plots of signal and frame detection
         """
@@ -535,48 +542,32 @@ class alignment:
         sync_files = sorted(sync_files)  # Sort the files in ascending order
 
         num_syncs = len(sync_files)
-        is_pclamp = any(f.endswith('.abf') for f in sync_files)
 
-        # Ensure number of TSeries matches the number of syncs
+        # Ensure the total number of sweeps matches the number of TSeries
+        # (each sweep of each sync file corresponds to one TSeries folder, in order)
         tseries_folders = [f for f in os.listdir(imaging_base_path) if 'TSeries' in f]
         num_tseries = len(tseries_folders)
-        if num_syncs != num_tseries:
-            raise ValueError("Number of TSeries does not match Number of Syncs")
+        sweeps_per_file = [self.get_abf_sweep_count(os.path.join(sync_base_path, f)) if f.endswith('.abf') else 1 for f in sync_files]
+        total_sweeps = sum(sweeps_per_file)
+        if total_sweeps != num_tseries:
+            raise ValueError(f"Total sweeps across all sync files ({total_sweeps}) does not match "
+                             f"number of TSeries folders ({num_tseries}). Found {num_syncs} sync file(s).")
 
         # Get the number of TIF files per TSeries folder
         num_tifs = [len([f for f in os.listdir(os.path.join(imaging_base_path, folder)) if 'Ch2' in f]) for folder in tseries_folders]
 
-        for acq_number in range(num_syncs):
-            print(f"Imaging Dir: {tseries_folders[acq_number]}, Sync File: {sync_files[acq_number]}")
-            sync_file_path = os.path.join(sync_base_path, sync_files[acq_number])
-            imaging_folder = tseries_folders[acq_number]
+        tseries_idx = 0
+        for file_index, num_sweeps in enumerate(sweeps_per_file):
+            # TSeries folders (and their TIF counts) for this file's sweeps
+            file_tseries = tseries_folders[tseries_idx:tseries_idx + num_sweeps]
+            file_num_tifs = num_tifs[tseries_idx:tseries_idx + num_sweeps]
+            tseries_idx += num_sweeps
 
-            # Load sync data based on file type
-            if is_pclamp:
-                # reader = AxonIO(sync_file_path)
-                # segments = reader.read_block().segments[0]
-                #if channel_number >= segments.analogsignals[0].shape[1]:
-                #    raise IndexError(f"Channel number {channel_number} is out of bounds for available channels.")
-                sync_data, sync_sampling_rate = self.load_sync_data(sync_file_path)
-                sync_data = sync_data[:,channel_number]
-                # sync_data = segments.analogsignals[2][:, channel_number].magnitude.flatten()
-                # sync_sampling_rate = float(segments.analogsignals[0].sampling_rate)
-
-            galvo_signal_norm = sync_data / np.max(sync_data)
-            peaks, _ = find_peaks(galvo_signal_norm, height=0.3, prominence=0.1)
-            scanning_amplitude = np.mean(sync_data[peaks])
-            good_peaks = [p for p in peaks if 0.95 * scanning_amplitude < sync_data[p] < 1.1 * scanning_amplitude]
-            frame_times = np.array(good_peaks)
-
-            # Calculate frame rate and intervals
-            frame_intervals_sec = np.diff(frame_times) / sync_sampling_rate
-            imaging_frame_rate = 1 / (np.mean(frame_intervals_sec))
-            alignment_info.append({
-                "imaging_id": imaging_folder,
-                "sync_id": sync_files[acq_number],
-                "sync_sampling_rate": sync_sampling_rate,
-                "frame_times": frame_times
-            })
+            # Detect frames in each sweep and concatenate all sweeps of this file
+            file_info = self.process_file(file_index, file_tseries, sync_files, sync_base_path, channel_number, file_num_tifs)
+            sync_data = file_info.pop('sync_data')
+            frame_times = file_info['frame_times']
+            alignment_info.append(file_info)
 
             # Optionally plot the galvo signal and frame detection
             if plot_on:
@@ -592,17 +583,13 @@ class alignment:
                 plt.title("Unique Frame Intervals")
                 plt.show()
 
-            # Adjust frame times if necessary based on TIF file count
-            if len(frame_times) > num_tifs[acq_number]:
-                frame_times = frame_times[:num_tifs[acq_number]]
-
-            alignment_info[acq_number]["frame_times"] = frame_times
-
         return alignment_info
 
     def get_frame_times_parallel(self, imaging_base_path, sync_base_path, channel_number, plot_on):
         """
         Extract frame timing information from synchronization files for imaging data.
+        Each sweep of a sync file corresponds to one TSeries folder; all sweeps of a file
+        are concatenated into one continuous sequence. Files are processed in parallel.
         
         Args:
             self: Instance of alignment class
@@ -612,17 +599,17 @@ class alignment:
             plot_on (bool): Whether to display diagnostic plots
             
         Returns:
-            list: List of dictionaries containing alignment information for each acquisition:
-                - imaging_id (str): TSeries folder name
+            list: List of dictionaries containing alignment information for each sync file:
+                - imaging_id (str): TSeries folder name (first TSeries for this file)
                 - sync_id (str): Sync file name
                 - sync_sampling_rate (float): Sampling rate of sync signal
-                - frame_times (ndarray): Array of frame timestamps
+                - frame_times (ndarray): Array of frame timestamps (concatenated from all sweeps)
                 
         Raises:
-            ValueError: If number of TSeries folders doesn't match number of sync files
+            ValueError: If the total number of sweeps across sync files doesn't match the number of TSeries folders
             
         Notes:
-            Supports both .abf and .h5 sync file formats
+            Supports both .abf and .h5 sync file formats (.h5 files are treated as a single sweep)
             Detects frames using peak detection on galvo signals
             Optionally displays diagnostic plots of signal and frame detection
         """
@@ -634,37 +621,47 @@ class alignment:
 
         num_syncs = len(sync_files)
 
-        is_pclamp = any(f.endswith('.abf') for f in sync_files)
-
-        # Ensure number of TSeries matches the number of syncs
+        # Ensure the total number of sweeps matches the number of TSeries
+        # (each sweep of each sync file corresponds to one TSeries folder, in order)
         # sorted so TSeries folders pair with the (sorted) sync files by index
         tseries_folders = sorted(f for f in os.listdir(imaging_base_path) if 'TSeries' in f)
         num_tseries = len(tseries_folders)
-        if num_syncs != num_tseries:
-            raise ValueError("Number of TSeries does not match Number of Syncs")
+        sweeps_per_file = [self.get_abf_sweep_count(os.path.join(sync_base_path, f)) if f.endswith('.abf') else 1 for f in sync_files]
+        total_sweeps = sum(sweeps_per_file)
+        if total_sweeps != num_tseries:
+            raise ValueError(f"Total sweeps across all sync files ({total_sweeps}) does not match "
+                             f"number of TSeries folders ({num_tseries}). Found {num_syncs} sync file(s).")
 
         # Get the number of TIF files per TSeries folder
         num_tifs = [len([f for f in os.listdir(os.path.join(imaging_base_path, folder)) if 'Ch2' in f]) for folder in tseries_folders]
 
+        # Split the TSeries folders (and their TIF counts) by sync file, one per sweep
+        tseries_per_file = []
+        num_tifs_per_file = []
+        tseries_idx = 0
+        for num_sweeps in sweeps_per_file:
+            tseries_per_file.append(tseries_folders[tseries_idx:tseries_idx + num_sweeps])
+            num_tifs_per_file.append(num_tifs[tseries_idx:tseries_idx + num_sweeps])
+            tseries_idx += num_sweeps
+
+        # Process files in parallel (each file concatenates all of its sweeps)
         with ProcessPoolExecutor() as executor:
-            results = executor.map(self.process_aquisition,range(num_syncs),
-                                   [tseries_folders]*num_syncs,
+            results = executor.map(self.process_file, range(num_syncs),
+                                   tseries_per_file,
                                    [sync_files] * num_syncs,
                                    [sync_base_path] * num_syncs,
-                                   [is_pclamp]*num_syncs,
                                    [channel_number] * num_syncs,
-                                   [num_tifs] * num_syncs,
-                                   [plot_on] * num_syncs)
+                                   num_tifs_per_file)
         
         alignment_info = list(results)
         #alignment_info = alignment_info.sort(key=lambda x: int(x['sync_id'].split('_')[-1].split('.')[0]))
 
         if plot_on:
             plt.figure(figsize=(15, 6))
-            num_plots = int(np.round(np.sqrt(len(alignment_info))))
+            num_plots = int(np.round(np.sqrt(len(alignment_info))))+1
 
             for ind , acq in enumerate(alignment_info):
-                #plt.subplot(num_plots,num_plots,ind+1)
+                plt.subplot(num_plots,num_plots,ind+1)
                 plt.plot(acq['sync_data'], label="Galvo Signal", color='mediumseagreen')
                 plt.scatter(acq['frame_times'], acq['sync_data'][acq['frame_times']], color='red', label="Frame Times")
                 ax = plt.gca()
@@ -683,7 +680,7 @@ class alignment:
 
             plt.figure(figsize=(15, 6))
             for ind, acq in enumerate(alignment_info):
-                #plt.subplot(num_plots,num_plots,ind+1)
+                plt.subplot(num_plots,num_plots,ind+1)
                 plt.title('Acquisition - ' + str(ind))
                 plt.hist(np.diff(acq['frame_times']),color='mediumseagreen')
                 plt.xlabel('Time between frames')
@@ -778,7 +775,9 @@ class alignment:
                 'virmen_trial_info': {
                     'correct': dataCell[current_trial]['correct'],
                     'left_turn': dataCell[current_trial]['leftTurn'],
-                    'condition': dataCell[current_trial]['condition']
+                    'condition': dataCell[current_trial]['condition'],
+                    'iti_correct' : dataCell[current_trial]['itiCorrect'],
+                    'iti_incorrect' : dataCell[current_trial]['itiMiss']
                 },
                 'dff': np.NaN,
                 'z_dff': np.NaN,
@@ -870,10 +869,11 @@ class alignment:
 
     def sound_alignment_imaging(self, imaging, alignment_info, sync_base_path,speaker_1,speaker_2):
         # NEED TO ADD SECOND SPEAKER ALIGNMENT IF SPEAKER OUTPUT IS RECORDED
-        files = [f for f in os.listdir(sync_base_path) if f.endswith('.abf')]
-        file_num = 0
-        sync_data,sampling_rate = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
-        frame_times = np.asarray(alignment_info[file_num]['frame_times'])
+        # Sync data (all sweeps) is loaded for each file when its first good trial is reached
+        file_num = None
+        sync_data = None
+        frame_times = None
+        file_start_frame = 0
  
 
         for trial in imaging:
@@ -884,16 +884,31 @@ class alignment:
                 # checking to see if we're still in the same file, update if not
                 if not file_num == current['file_num']:
                     file_num = current['file_num']
-                    sync_data,sampling_rate = self.load_sync_data(os.path.join(sync_base_path,files[file_num]))
-                    frame_times = alignment_info[file_num]['frame_times']
+                    sync_file = alignment_info[file_num]['sync_id']
+                    sync_file_path = os.path.join(sync_base_path, sync_file)
+                    frame_times = np.asarray(alignment_info[file_num]['frame_times'])
+
+                    # Load and concatenate all sweeps for this file (frame_times span all sweeps)
+                    num_sweeps = self.get_abf_sweep_count(sync_file_path) if sync_file.endswith('.abf') else 1
+                    all_sweep_data = []
+                    for sweep_num in range(num_sweeps):
+                        sweep_data, sampling_rate = self.load_sync_data(sync_file_path, sweep_number=sweep_num)
+                        all_sweep_data.append(sweep_data)
+                    sync_data = np.vstack(all_sweep_data)
+
+                    # First frame of this file in the frame numbering used by relative_frames (all files concatenated)
+                    file_start_frame = sum(len(alignment_info[i]['frame_times']) for i in range(file_num))
+
+                # Frames of this trial relative to the start of its file
+                file_frames = current['relative_frames'] - file_start_frame
 
                 # if given the channel numbers of the speakers, add sound traces to imaging structure
                 if speaker_1 is not None:
                     sound_trace = sync_data[frame_times,speaker_1]
-                    imaging[trial]['speaker_1'] = sound_trace[current['relative_frames']%10000]
+                    imaging[trial]['speaker_1'] = sound_trace[file_frames]
                 if speaker_2 is not None:
                     sound_trace = sync_data[frame_times,speaker_2]
-                    imaging[trial]['speaker_2'] = sound_trace[current['relative_frames']%10000]
+                    imaging[trial]['speaker_2'] = sound_trace[file_frames]
 
                 # Sound onset should be at 50 virmen units
                 temp_onset = (np.floor(current['movement_in_imaging_time']['y_position']) > 48) & (np.floor(current['movement_in_imaging_time']['y_position']) < 51)
@@ -1252,32 +1267,128 @@ class alignment:
         
         return movement_imaging
 
-    def load_sync_data(self, handle):
+    def load_sync_data(self, handle, sweep_number=0):
 
         abf = pyabf.ABF(handle)
         # Get number of channels
         num_channels = abf.channelCount
         sampling_rate = abf.sampleRate
 
-        # Create array to store all channel data
-        sync_data = np.zeros((len(abf.sweepY), num_channels))
+        # Set to the specified sweep to get sweep length
+        abf.setSweep(sweep_number, channel=0)
+        sweep_length = len(abf.sweepY)
 
-        # Load data from each channel
+        # Create array to store all channel data
+        sync_data = np.zeros((sweep_length, num_channels))
+
+        # Load data from each channel for the specified sweep
         for ch in range(num_channels):
-            abf.setSweep(0, channel=ch)
+            abf.setSweep(sweep_number, channel=ch)
             sync_data[:, ch] = abf.sweepY
 
         return sync_data,sampling_rate
-    
-    def process_aquisition(self,acq_number,tseries_folders,sync_files,sync_base_path,is_pclamp,channel_number,num_tifs,plot_on):
 
-        print(f"Imaging Dir: {tseries_folders[acq_number]}, Sync File: {sync_files[acq_number]}")
-        sync_file_path = os.path.join(sync_base_path, sync_files[acq_number])
+    def get_abf_sweep_count(self, abf_file_path):
+        """
+        Get the number of sweeps in an ABF file.
+
+        Args:
+            abf_file_path (str): Path to ABF file
+
+        Returns:
+            int: Number of sweeps in the file
+        """
+        abf = pyabf.ABF(abf_file_path)
+        return abf.sweepCount
+
+    def process_file(self, file_index, tseries_folders_for_file, sync_files, sync_base_path, channel_number, num_tifs_for_file):
+        """
+        Process a single sync file: detect frames in each sweep, then concatenate all sweeps.
+        Each sweep of the file corresponds to one TSeries folder, in order.
+
+        Args:
+            file_index (int): Index of the file to process
+            tseries_folders_for_file (list): TSeries folder names for this file's sweeps (one per sweep)
+            sync_files (list): List of all sync file names
+            sync_base_path (str): Base path to sync files
+            channel_number (int): Channel number for sync signal
+            num_tifs_for_file (list): TIF counts for each sweep's TSeries folder
+
+        Returns:
+            dict: Dictionary with alignment information for the concatenated file
+                - imaging_id (str): First TSeries folder of this file
+                - sync_id (str): Sync file name
+                - sync_sampling_rate (float): Sampling rate of sync signal
+                - frame_times (ndarray): Frame times in concatenated (all sweeps) sample time
+                - sync_data (ndarray): Concatenated galvo signal
+        """
+        sync_file = sync_files[file_index]
+        sync_file_path = os.path.join(sync_base_path, sync_file)
+
+        # .h5 files are treated as a single sweep
+        num_sweeps = self.get_abf_sweep_count(sync_file_path) if sync_file.endswith('.abf') else 1
+        print(f"Processing file {file_index + 1}: {sync_file} -> {num_sweeps} sweep(s), {len(tseries_folders_for_file)} TSeries folder(s)")
+
+        all_sweep_data = []
+        all_frame_times_list = []
+        sync_sampling_rate = None
+        cumulative_offset = 0
+
+        for sweep_num in range(num_sweeps):
+            # Load sync data for this sweep
+            sweep_data, sync_sampling_rate = self.load_sync_data(sync_file_path, sweep_number=sweep_num)
+            sweep_channel_data = sweep_data[:, channel_number]
+
+            # Detect frames in this sweep
+            galvo_signal_norm = sweep_channel_data / np.max(sweep_channel_data)
+            peaks, _ = find_peaks(galvo_signal_norm, height=0.3, prominence=0.1)
+            scanning_amplitude = np.mean(sweep_channel_data[peaks])
+            good_peaks = [p for p in peaks if 0.95 * scanning_amplitude < sweep_channel_data[p] < 1.1 * scanning_amplitude]
+            sweep_frame_times = np.array(good_peaks)
+
+            # Adjust frame times if necessary based on this sweep's TIF file count
+            if len(sweep_frame_times) > num_tifs_for_file[sweep_num]:
+                sweep_frame_times = sweep_frame_times[:num_tifs_for_file[sweep_num]]
+
+            print(f"    Sweep {sweep_num + 1}/{num_sweeps} ({tseries_folders_for_file[sweep_num]}): "
+                  f"{len(sweep_frame_times)} frames, {num_tifs_for_file[sweep_num]} TIFs, offset={cumulative_offset}")
+
+            # Add offset to frame times (to account for previous sweeps)
+            all_frame_times_list.append(sweep_frame_times + cumulative_offset)
+
+            # Store sweep data and update offset
+            all_sweep_data.append(sweep_channel_data)
+            cumulative_offset += len(sweep_channel_data)
+
+        # Concatenate all sweeps (int so frame times can be used as indices even if a sweep had no frames)
+        concatenated_sync_data = np.concatenate(all_sweep_data)
+        concatenated_frame_times = np.concatenate(all_frame_times_list).astype(np.int64)
+
+        print(f"  Total concatenated frames: {len(concatenated_frame_times)} (expected {sum(num_tifs_for_file)})")
+
+        # Use the first TSeries folder as the imaging_id
+        imaging_folder = tseries_folders_for_file[0] if tseries_folders_for_file else "unknown"
+
+        return {
+            "imaging_id": imaging_folder,
+            "sync_id": sync_file,
+            "sync_sampling_rate": sync_sampling_rate,
+            "frame_times": concatenated_frame_times,
+            "sync_data": concatenated_sync_data
+        }
+    
+    def process_aquisition(self,acq_number,tseries_folders,sync_files,sync_base_path,is_pclamp,channel_number,num_tifs,plot_on,sweep_number=None):
+
+        sync_file = sync_files[acq_number]
         imaging_folder = tseries_folders[acq_number]
+        sweep_num = sweep_number if sweep_number is not None else 0
+
+        print(f"Imaging Dir: {imaging_folder}, Sync File: {sync_file}, Sweep: {sweep_num}")
+        sync_file_path = os.path.join(sync_base_path, sync_file)
 
         # Load sync data based on file type
         if is_pclamp:
-            sync_data, sync_sampling_rate = self.load_sync_data(sync_file_path)
+            sync_data, sync_sampling_rate = self.load_sync_data(sync_file_path, sweep_number=sweep_num)
             sync_data = sync_data[:,channel_number]
 
         galvo_signal_norm = sync_data / np.max(sync_data)
@@ -1299,7 +1410,8 @@ class alignment:
         
         return {
             "imaging_id": imaging_folder,
-            "sync_id": sync_files[acq_number],
+            "sync_id": sync_file,
+            "sweep_number": sweep_num,
             "sync_sampling_rate": sync_sampling_rate,
             "frame_times": frame_times,
             "sync_data" : sync_data
